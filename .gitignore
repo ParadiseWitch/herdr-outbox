@@ -1,0 +1,32 @@
+# Binaries
+herdr-outbox
+herdr-outbox.exe
+herdr-outbox.exe~
+*.exe
+!bin/herdr-outbox.exe
+bin/herdr-outbox.exe~
+
+# Build output
+dist/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Server discovery files
+.server-port
+.server-pid
+
+# Data directory (if local)
+data/
+
+# Test coverage
+coverage.out
+*.prof
