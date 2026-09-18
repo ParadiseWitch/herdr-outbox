@@ -10,8 +10,9 @@ Agent 正在跑当前任务，你已经想到后面还有一串事：重构模�
 
 - **它忙完自动发**：Agent 完成当前任务进入空闲时，下一条自动送过去
 - **定时发**：`20m`、`09:30`、`2026-09-17 02:00`，到点自动发
-- **手动发**：TUI 里选中按 `s`
+- **错峰跑重活**：白天把不急的耗时任务排进队列，定时到低峰时段再发，按 Agent 的峰谷计费省下峰时费用
 - **先记着不发**：存草稿或收藏，随时改随时看
+- **编辑好立即发**：TUI 里选中按 `s`
 
 ```
 你 → herdr-outbox（排队 · 定时 · 完成检测） → herdr → Agent
@@ -58,16 +59,16 @@ herdr-outbox server status
 
 ## 命令
 
-| 命令 | 说明 |
-| --- | --- |
-| `new [文本…]` | 新建草稿 |
-| `ls [--json]` | 列出消息 |
-| `send <id\|all-ready>` | 立即发送 |
-| `arm <id> <触发>` | 设触发：`manual` / `completion` / `20m` / `09:30` / `2026-09-17 02:00` |
-| `target <id> <面板>` | 指定目标（`wK:p1` 或面板标签） |
-| `log [n]` · `panes` · `doctor` | 调度日志 / herdr 拓扑 / 连接体检 |
-| `config editor builtin\|external` | 切换编辑方式 |
-| `version` · `update` · `uninstall [--data]` | 版本 / 自更新 / 卸载 |
+| 命令                                        | 说明                                                                   |
+| ------------------------------------------- | ---------------------------------------------------------------------- |
+| `new [文本…]`                               | 新建草稿                                                               |
+| `ls [--json]`                               | 列出消息                                                               |
+| `send <id\|all-ready>`                      | 立即发送                                                               |
+| `arm <id> <触发>`                           | 设触发：`manual` / `completion` / `20m` / `09:30` / `2026-09-17 02:00` |
+| `target <id> <面板>`                        | 指定目标（`wK:p1` 或面板标签）                                         |
+| `log [n]` · `panes` · `doctor`              | 调度日志 / herdr 拓扑 / 连接体检                                       |
+| `config editor builtin\|external`           | 切换编辑方式                                                           |
+| `version` · `update` · `uninstall [--data]` | 版本 / 自更新 / 卸载                                                   |
 
 全局选项：`--dir`（消息目录，或 `$HERDR_OUTBOX_DIR`）、`--session`、`--bin`、`--dry-run`（模拟后端，不真发）、`--interval`。
 
