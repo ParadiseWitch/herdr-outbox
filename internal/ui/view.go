@@ -10,6 +10,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 
+	"herdr-outbox/internal/config"
 	"herdr-outbox/internal/herdr"
 	"herdr-outbox/internal/model"
 )
@@ -192,7 +193,9 @@ func (m *Model) listRows(msg *model.Message, width int, selected bool) []string 
 	} else {
 		row = styleByStatus(msg.Status).Render(pad(row, width-1))
 	}
-	meta := "  " + truncateWidth(m.metaFor(msg), width-2)
+	// Both rows of an entry must come out exactly as wide as each other, or the
+	// divider between the panels lands a column off on one of them.
+	meta := pad("  "+truncateWidth(m.metaFor(msg), width-3), width-1)
 	return []string{row, stDim.Render(meta)}
 }
 
@@ -211,11 +214,19 @@ func (m *Model) metaFor(msg *model.Message) string {
 		}
 		return "定时 → " + msg.Target.Display()
 	case model.StatusWaiting:
+		// A waiting message can be blocked on something that will never happen, so
+		// whatever the scheduler recorded is more useful than the bare status.
+		if msg.LastError != "" {
+			return "等待中: " + truncate(msg.LastError, 46)
+		}
 		pane, ok := m.paneFor(msg)
 		if !ok {
 			return "等待中: 目标已消失"
 		}
-		return "在 " + pane.Display() + ": " + pane.AgentStatus
+		if pane.AgentStatus == herdr.StatusWorking {
+			return "代理工作中，完成后发送 → " + pane.Display()
+		}
+		return "等待代理开始工作（" + herdr.StatusLabel(pane.AgentStatus) + "）→ " + pane.Display()
 	case model.StatusFailed:
 		return "失败: " + truncate(msg.LastError, 24)
 	case model.StatusDraft:
@@ -375,6 +386,9 @@ func (m *Model) statusView(width int) string {
 		if m.poll > 0 && time.Since(m.snapshot.FetchedAt) > 3*time.Duration(m.poll) {
 			label += " 已过期"
 		}
+		if m.snapshot.AgentSeqError != "" {
+			label += " │ 无代理序号"
+		}
 		ws := ""
 		for _, w := range m.snapshot.Workspaces {
 			if w.Focused {
@@ -438,6 +452,8 @@ func statusStyle(status string) lipgloss.Style {
 // frame never grows past the terminal height and scrolls the status bar away.
 func (m *Model) overlayView(width, bodyHeight int) string {
 	switch m.mode {
+	case modeEdit:
+		return m.editOverlay(bodyHeight)
 	case modeHelp:
 		return padBlock(strings.Split(m.helpView(width), "\n"), width, bodyHeight)
 	case modeLog:
@@ -546,7 +562,7 @@ func (m *Model) pickerRightPanel(width, bodyHeight int) string {
 
 func (m *Model) helpView(width int) string {
 	rows := [][2]string{
-		{"n / e / Enter", "新建消息 · 用 $EDITOR 编辑"},
+		{"n / e / Enter", "新建消息 · 编辑内容"},
 		{"i", "重命名标题（留空显示内容预览）"},
 		{"j k g G tab", "移动 · 跳转 · 切换列表和消息"},
 		{"s", "立即发送"},
@@ -560,12 +576,17 @@ func (m *Model) helpView(width int) string {
 		{"ctrl+d ctrl+u", "滚动长消息"},
 		{"q  Q", "退出筛选 / 退出"},
 	}
-	out := make([]string, 0, len(rows)+2)
+	out := make([]string, 0, len(rows)+3)
 	out = append(out, stTitle.Render("快捷键"))
 	for _, r := range rows {
 		out = append(out, "  "+stOk.Render(pad(r[0], 15))+stDim.Render(r[1]))
 	}
-	out = append(out, "  "+stDim.Render("数据以 Markdown 文件存储；e 在编辑器中打开"))
+	if m.editorMode == config.EditorBuiltin {
+		out = append(out, "  "+stDim.Render("内置编辑器: ctrl+s 保存 · 二次 esc 放弃；改配置见 herdr-outbox config editor"))
+	} else {
+		out = append(out, "  "+stDim.Render("外部编辑器: $EDITOR / $VISUAL；改配置见 herdr-outbox config editor"))
+	}
+	out = append(out, "  "+stDim.Render("数据以 Markdown 文件存储"))
 	return lipgloss.NewStyle().Width(max(width, 1)).Render(strings.Join(out, "\n"))
 }
 
@@ -657,6 +678,25 @@ func (m *Model) pickerOverlay(width, bodyHeight int) string {
 	return strings.Join(out, "\n")
 }
 
+// editOverlay is the in-TUI editor: a title row, the text area, and a hint row.
+// It replaces the two panels so the buffer gets the whole body area.
+func (m *Model) editOverlay(bodyHeight int) string {
+	title := stTitle.Render("编辑 ") + stDim.Render(truncate(m.editID, 20))
+	if m.textarea.Value() != m.editOriginal {
+		title += stWarn.Render(" ●")
+	}
+	hint := stDim.Render("ctrl+s 保存 · esc 放弃")
+	if m.editConfirmDiscard {
+		hint = stAlert.Render("有未保存的修改；再按一次 esc 放弃")
+	}
+	out := []string{title, m.textarea.View()}
+	if spare := bodyHeight - 2 - lipgloss.Height(m.textarea.View()); spare > 0 {
+		out = append(out, strings.Repeat("\n", spare))
+	}
+	out = append(out, hint)
+	return strings.Join(out, "\n")
+}
+
 func (m *Model) confirmOverlay(width int) string {
 	if m.deleteHold == nil {
 		return ""
@@ -710,7 +750,9 @@ func pad(s string, width int) string {
 
 // displayWidth and truncateWidth count what the terminal draws, not bytes, and
 // skip ANSI sequences, so a styled row is measured and cut like a plain one.
-func displayWidth(s string) int { return ansi.StringWidth(s) }
+// lipgloss is the same measurer JoinHorizontal uses to size the two panels, so a
+// row can never come out wider than the column it was fitted into.
+func displayWidth(s string) int { return lipgloss.Width(s) }
 
 func truncateWidth(s string, width int) string {
 	if width <= 1 {

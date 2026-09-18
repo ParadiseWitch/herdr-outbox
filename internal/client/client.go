@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -258,12 +259,27 @@ func (c *Client) do(ctx context.Context, method, path string, body any, out any)
 }
 
 func readError(resp *http.Response) error {
+	msg := resp.Status
 	var errResp api.ErrorResponse
 	if json.NewDecoder(resp.Body).Decode(&errResp) == nil && errResp.Error != "" {
-		return fmt.Errorf("server: %s", errResp.Error)
+		// The server's message is already written for the user, so it goes through
+		// verbatim rather than wrapped in another layer of prefix.
+		msg = errResp.Error
 	}
-	return fmt.Errorf("server returned %s", resp.Status)
+	if resp.StatusCode == http.StatusBadGateway {
+		return unavailableError{msg: msg}
+	}
+	return errors.New(msg)
 }
+
+// unavailableError restores herdr.ErrUnavailable on this side of the wire. errors.Is
+// cannot rebuild a sentinel from a JSON body, and the TUI needs it to tell "herdr
+// has no state to give" apart from "the request failed".
+type unavailableError struct{ msg string }
+
+func (e unavailableError) Error() string { return e.msg }
+
+func (e unavailableError) Is(target error) bool { return target == herdr.ErrUnavailable }
 
 func decodeSSE(r io.Reader, ch chan<- api.Event) {
 	var dataBuf strings.Builder
@@ -300,20 +316,21 @@ func decodeSSE(r io.Reader, ch chan<- api.Event) {
 
 func toAPIMessage(m *model.Message) api.Message {
 	return api.Message{
-		ID:        m.ID,
-		Title:     m.Title,
-		Content:   m.Content,
-		Target:    toAPITarget(m.Target),
-		Trigger:   toAPITrigger(m.Trigger),
-		Status:    string(m.Status),
-		Favorite:  m.Favorite,
-		CreatedAt: m.CreatedAt,
-		UpdatedAt: m.UpdatedAt,
-		SentAt:    m.SentAt,
-		Attempts:  m.Attempts,
-		LastError: m.LastError,
-		SentVia:   m.SentVia,
+		ID:              m.ID,
+		Title:           m.Title,
+		Content:         m.Content,
+		Target:          toAPITarget(m.Target),
+		Trigger:         toAPITrigger(m.Trigger),
+		Status:          string(m.Status),
+		Favorite:        m.Favorite,
+		CreatedAt:       m.CreatedAt,
+		UpdatedAt:       m.UpdatedAt,
+		SentAt:          m.SentAt,
+		Attempts:        m.Attempts,
+		LastError:       m.LastError,
+		SentVia:         m.SentVia,
 		BaselineSeq:     m.BaselineSeq,
+		BaselineSet:     m.BaselineSet,
 		ObservedWorking: m.ObservedWorking,
 		SettleSince:     m.SettleSince,
 	}
@@ -339,20 +356,21 @@ func toAPITrigger(t model.Trigger) api.Trigger {
 
 func fromAPIMessage(a *api.Message) *model.Message {
 	return &model.Message{
-		ID:        a.ID,
-		Title:     a.Title,
-		Content:   a.Content,
-		Target:    fromAPITarget(a.Target),
-		Trigger:   fromAPITrigger(a.Trigger),
-		Status:    model.Status(a.Status),
-		Favorite:  a.Favorite,
-		CreatedAt: a.CreatedAt,
-		UpdatedAt: a.UpdatedAt,
-		SentAt:    a.SentAt,
-		Attempts:  a.Attempts,
-		LastError: a.LastError,
-		SentVia:   a.SentVia,
+		ID:              a.ID,
+		Title:           a.Title,
+		Content:         a.Content,
+		Target:          fromAPITarget(a.Target),
+		Trigger:         fromAPITrigger(a.Trigger),
+		Status:          model.Status(a.Status),
+		Favorite:        a.Favorite,
+		CreatedAt:       a.CreatedAt,
+		UpdatedAt:       a.UpdatedAt,
+		SentAt:          a.SentAt,
+		Attempts:        a.Attempts,
+		LastError:       a.LastError,
+		SentVia:         a.SentVia,
 		BaselineSeq:     a.BaselineSeq,
+		BaselineSet:     a.BaselineSet,
 		ObservedWorking: a.ObservedWorking,
 		SettleSince:     a.SettleSince,
 	}
@@ -417,9 +435,10 @@ func fromAPISnapshot(resp *api.SnapshotResponse) *herdr.Snapshot {
 		}
 	}
 	return &herdr.Snapshot{
-		Workspaces: ws,
-		Panes:      panes,
-		FetchedAt:  resp.FetchedAt,
-		Source:     resp.Source,
+		Workspaces:    ws,
+		Panes:         panes,
+		FetchedAt:     resp.FetchedAt,
+		Source:        resp.Source,
+		AgentSeqError: resp.AgentSeqError,
 	}
 }

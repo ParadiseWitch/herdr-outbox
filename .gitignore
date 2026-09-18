@@ -1,7 +1,8 @@
-# Binaries
-herdr-outbox
-herdr-outbox.exe
-herdr-outbox.exe~
+# Binaries — anchored to the repo root: a bare `herdr-outbox` also matches the
+# cmd/herdr-outbox/ source directory, which silently hid the main package from git.
+/herdr-outbox
+/herdr-outbox.exe
+/herdr-outbox.exe~
 *.exe
 !bin/herdr-outbox.exe
 bin/herdr-outbox.exe~

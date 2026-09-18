@@ -7,9 +7,11 @@ import (
 	"os"
 	"time"
 
+	"github.com/charmbracelet/bubbles/textarea"
 	tea "github.com/charmbracelet/bubbletea"
 
 	"herdr-outbox/internal/api"
+	"herdr-outbox/internal/config"
 	"herdr-outbox/internal/dataprovider"
 	"herdr-outbox/internal/herdr"
 	"herdr-outbox/internal/model"
@@ -27,6 +29,7 @@ const (
 	modeHelp
 	modeLog
 	modeRename
+	modeEdit
 )
 
 type focusArea int
@@ -67,22 +70,33 @@ type (
 	editorDoneMsg struct {
 		id  string
 		err error
+		// saved marks an in-TUI commit, which shares the reload path with the
+		// external editor but gets a 已保存 notice instead of 已重新加载.
+		saved bool
 	}
 	remoteEditDoneMsg struct {
 		id      string
 		tmpPath string
 	}
 	noticeMsg struct{ text string }
+
+	// builtinEditReadyMsg carries the fetched body into the in-TUI editor.
+	builtinEditReadyMsg struct {
+		id      string
+		content string
+	}
 )
 
 type tickMsg time.Time
 
 type Options struct {
-	Store   *store.Store
-	Engine  *scheduler.Engine
+	Store    *store.Store
+	Engine   *scheduler.Engine
 	Provider dataprovider.DataProvider
-	Poll    time.Duration
-	NoTimer bool
+	Poll     time.Duration
+	NoTimer  bool
+	// Editor selects the in-TUI text area or an external $EDITOR. Empty means builtin.
+	Editor config.EditorMode
 }
 
 type Model struct {
@@ -114,6 +128,13 @@ type Model struct {
 	renameInput string
 	renameID    string
 
+	editorMode config.EditorMode
+	textarea   textarea.Model
+	editID     string
+	// editOriginal is the body as loaded, used to detect unsaved changes.
+	editOriginal       string
+	editConfirmDiscard bool
+
 	quitting   bool
 	stepActive bool
 	deferTick  bool
@@ -126,9 +147,11 @@ func New(opts Options) *Model {
 		prov = &LocalProvider{Store: opts.Store, Engine: opts.Engine}
 	}
 	m := &Model{
-		provider: prov,
-		poll:     opts.Poll,
-		NoTimer:  opts.NoTimer,
+		provider:   prov,
+		poll:       opts.Poll,
+		NoTimer:    opts.NoTimer,
+		editorMode: config.Config{Editor: opts.Editor}.ResolveEditor(),
+		textarea:   newTextarea(),
 	}
 	if s, ok := prov.(dataprovider.Scheduler); ok {
 		m.sched = s
@@ -199,6 +222,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width, m.height = msg.Width, msg.Height
 		m.ready = true
 		m.logResize()
+		if m.mode == modeEdit {
+			m.sizeTextarea()
+		}
 		return m, nil
 
 	case tickMsg:
@@ -287,6 +313,16 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case remoteEditDoneMsg:
 		return m, m.uploadAfterEdit(msg.id, msg.tmpPath)
+
+	case builtinEditReadyMsg:
+		m.mode = modeEdit
+		m.editID = msg.id
+		m.editOriginal = msg.content
+		m.editConfirmDiscard = false
+		m.textarea.SetValue(msg.content)
+		m.textarea.Focus()
+		m.sizeTextarea()
+		return m, nil
 
 	case panePreviewMsg:
 		// Only update if this is still the selected pane.

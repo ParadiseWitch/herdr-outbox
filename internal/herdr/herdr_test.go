@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"herdr-outbox/internal/model"
 )
@@ -264,5 +265,18 @@ func TestPaneIDSuffixesSortBesideTheirNumber(t *testing.T) {
 	}
 	if strings.Join(order, " ") != "w9:p1 w9:p1N w9:p2 w9:p3" {
 		t.Fatalf("order = %v", order)
+	}
+}
+
+// A herdr that cannot be started is "no state available", which is a different
+// situation from "herdr refused the request": armed changes have to survive the
+// first instead of being thrown away.
+func TestUnspawnableHerdrIsUnavailable(t *testing.T) {
+	c := &CLI{Bin: "no-such-herdr-binary-for-test", ReadTimeout: 2 * time.Second}
+	if _, err := c.call(context.Background(), 2*time.Second, "workspace", "list"); !IsUnavailable(err) {
+		t.Fatalf("missing binary is not unavailable: %v", err)
+	}
+	if err := c.Probe(context.Background()); !IsUnavailable(err) {
+		t.Fatalf("probe lost the sentinel: %v", err)
 	}
 }

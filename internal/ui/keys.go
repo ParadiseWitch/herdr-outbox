@@ -20,6 +20,8 @@ func (m *Model) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	key := msg.String()
 
 	switch m.mode {
+	case modeEdit:
+		return m.onEditKey(msg)
 	case modeHelp:
 		if key == "esc" || key == "?" || key == "q" || key == "ctrl+c" {
 			m.mode = modeBrowse
@@ -37,7 +39,7 @@ func (m *Model) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case modeTriggerPicker:
 		return m.onTriggerPickerKey(key)
 	case modeRename:
-		return m.onRenameKey(key)
+		return m.onRenameKey(msg)
 	}
 
 	ctx := context.Background()
@@ -267,9 +269,7 @@ func (m *Model) cloneMessage(src *model.Message) (tea.Model, tea.Cmd) {
 	dup.SentAt = nil
 	dup.Attempts = 0
 	dup.LastError = ""
-	dup.BaselineSeq = 0
-	dup.ObservedWorking = false
-	dup.SettleSince = nil
+	dup.ClearBaseline()
 	dup.SentVia = ""
 	dup.Title = src.Title
 	if dup.Title == "" {
@@ -434,10 +434,6 @@ func (m *Model) applyTrigger(kind model.TriggerKind, sendAt *time.Time) (tea.Mod
 	m.mode = modeBrowse
 	ctx := context.Background()
 	if _, err := m.provider.SetTrigger(ctx, id, kind, sendAt); err != nil {
-		if herdr.IsUnavailable(err) {
-			m.setNotice("目标未知: " + err.Error())
-			return m, m.armWithoutHerdr(ctx, id, kind, sendAt)
-		}
 		m.setNotice("触发设置失败: " + err.Error())
 		return m, m.loadMsg()
 	}
@@ -445,22 +441,15 @@ func (m *Model) applyTrigger(kind model.TriggerKind, sendAt *time.Time) (tea.Mod
 	return m, tea.Batch(m.loadMsg(), m.snapshotCmd())
 }
 
-// armWithoutHerdr keeps the trigger change local when herdr cannot be reached, so
-// the message is still armed against whatever target is stored.
-func (m *Model) armWithoutHerdr(ctx context.Context, id string, kind model.TriggerKind, sendAt *time.Time) tea.Cmd {
-	return func() tea.Msg {
-		if _, err := m.provider.SetTrigger(ctx, id, kind, sendAt); err != nil {
-			return noticeMsg{text: "重新设置失败: " + err.Error()}
-		}
-		return noticeMsg{text: "herdr 不可达: 已设置但未获取实时基线"}
-	}
-}
-
 func (m *Model) afterEdit(msg editorDoneMsg) (tea.Model, tea.Cmd) {
 	if msg.err != nil {
 		m.setNotice("编辑器异常退出: " + msg.err.Error())
 	}
 	before := m.byID(msg.id)
+	verb := "已重新加载"
+	if msg.saved {
+		verb = "已保存"
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
 
@@ -478,14 +467,14 @@ func (m *Model) afterEdit(msg editorDoneMsg) (tea.Model, tea.Cmd) {
 				m.setNotice("保存失败: " + err.Error())
 			}
 		}
-		m.setNotice(fmt.Sprintf("已重新加载 %s (%d 行)", updated.ID, len(updated.BodyLines())))
+		m.setNotice(fmt.Sprintf("%s %s (%d 行)", verb, updated.ID, len(updated.BodyLines())))
 	} else {
 		updated, err := m.provider.GetMessage(ctx, msg.id)
 		if err != nil {
 			m.setNotice("重新加载失败: " + err.Error())
 			return m, m.loadMsg()
 		}
-		m.setNotice(fmt.Sprintf("已重新加载 %s (%d 行)", updated.ID, len(updated.BodyLines())))
+		m.setNotice(fmt.Sprintf("%s %s (%d 行)", verb, updated.ID, len(updated.BodyLines())))
 	}
 	return m, tea.Batch(m.loadMsg(), m.snapshotCmd())
 }
@@ -499,8 +488,8 @@ func orMessage(m *model.Message) *model.Message {
 
 func truncate(s string, n int) string { return truncateWidth(s, n) }
 
-func (m *Model) onRenameKey(key string) (tea.Model, tea.Cmd) {
-	switch key {
+func (m *Model) onRenameKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
 	case "esc":
 		m.mode = modeBrowse
 		m.renameID = ""
@@ -517,42 +506,12 @@ func (m *Model) onRenameKey(key string) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	}
-	// Accept any printable character, including multi-byte IME input (Chinese,
-	// Japanese, etc.). Control keys and function keys have longer string
-	// representations like "ctrl+c" that should not be inserted.
-	if len(key) > 0 && !isControlKey(key) {
-		m.renameInput += key
+	// Runes holds printable input only, so named keys like "ctrl+w" or "up"
+	// never leak into the title the way a String() comparison would allow.
+	if len(msg.Runes) > 0 {
+		m.renameInput += string(msg.Runes)
 	}
 	return m, nil
-}
-
-// isControlKey reports whether a Bubble Tea key string is a named control key
-// rather than a printable character.
-func isControlKey(key string) bool {
-	if len(key) == 0 {
-		return true
-	}
-	// Single printable ASCII byte.
-	if len(key) == 1 && key[0] >= ' ' && key[0] <= '~' {
-		return false
-	}
-	// Single printable rune (covers CJK and other multi-byte characters).
-	if []rune(key) != nil {
-		rs := []rune(key)
-		if len(rs) >= 1 {
-			allPrintable := true
-			for _, r := range rs {
-				if r < ' ' || r == 0x7f {
-					allPrintable = false
-					break
-				}
-			}
-			if allPrintable {
-				return false
-			}
-		}
-	}
-	return true
 }
 
 func (m *Model) commitRename() (tea.Model, tea.Cmd) {

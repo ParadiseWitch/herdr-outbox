@@ -35,6 +35,28 @@ func Settled(agentStatus string) bool {
 	return false
 }
 
+// StatusLabel renders a lifecycle state for the Chinese UI, keeping the raw word
+// for anything herdr adds that this build does not know about.
+func StatusLabel(s string) string {
+	switch s {
+	case StatusIdle:
+		return "空闲"
+	case StatusWorking:
+		return "工作中"
+	case StatusBlocked:
+		return "等待审批"
+	case StatusDone:
+		return "已完成"
+	case StatusUnknown:
+		return "未识别"
+	case StatusDetached:
+		return "已脱离"
+	case "":
+		return "无代理"
+	}
+	return s
+}
+
 type Workspace struct {
 	ID          string `json:"workspace_id"`
 	Label       string `json:"label"`
@@ -79,11 +101,24 @@ type Pane struct {
 
 	// Synthetic, filled in by Build: ordinal name such as qodercli-2 and the
 	// owning workspace label.
+	// Synthetic, filled in by Build: ordinal name such as qodercli-2 and the
+	// owning workspace label.
 	Ordinal string `json:"-"`
 	WsLabel string `json:"-"`
 }
 
 func (p Pane) HasAgent() bool { return p.Agent != "" }
+
+// Trackable reports whether herdr gives this pane a lifecycle that an
+// after_completion trigger can wait on. A plain shell stays `unknown` forever, so
+// waiting for it to finish is waiting for an event that cannot happen.
+func (p Pane) Trackable() bool {
+	switch p.AgentStatus {
+	case StatusWorking, StatusBlocked, StatusIdle, StatusDone:
+		return true
+	}
+	return false
+}
 
 func (p Pane) Title() string {
 	t := strings.TrimSpace(p.TerminalTitleClean)
@@ -141,6 +176,10 @@ type Snapshot struct {
 	Panes      []Pane
 	FetchedAt  time.Time
 	Source     string
+	// AgentSeqError means the read that supplies state_change_seq failed. Pane
+	// status still looks usable because `pane list` carries it, but without a
+	// sequence there is no completion edge to detect.
+	AgentSeqError string `json:"agent_seq_error,omitempty"`
 }
 
 func Build(workspaces []Workspace, panes []Pane, agents []Pane) *Snapshot {

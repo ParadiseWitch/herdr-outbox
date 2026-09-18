@@ -146,7 +146,10 @@ type Message struct {
 	// BaselineSeq is the herdr state_change_seq observed when the message was armed;
 	// a send requires the sequence to move past it, which proves a real transition
 	// happened after arming and survives a missed poll.
+	// BaselineSet separates "recorded a baseline of 0" from "never armed": herdr has
+	// not made a state change yet on a freshly started agent, so 0 is a real value.
 	BaselineSeq     int64      `yaml:"baseline_seq,omitempty"`
+	BaselineSet     bool       `yaml:"baseline_set,omitempty"`
 	ObservedWorking bool       `yaml:"observed_working,omitempty"`
 	SettleSince     *time.Time `yaml:"settle_since,omitempty"`
 
@@ -171,11 +174,19 @@ func (m *Message) SettleWindow() time.Duration {
 
 // Rebind resets completion tracking so the message waits for a fresh edge.
 func (m *Message) Rebind(at time.Time) {
-	m.BaselineSeq = 0
-	m.ObservedWorking = false
-	m.SettleSince = nil
+	m.ClearBaseline()
 	m.Status = m.Trigger.Kind.Status()
 	m.UpdatedAt = at
+}
+
+// ClearBaseline forgets a recorded arming. Anything that changes a message's
+// target, trigger or status has to call it, or the scheduler keeps comparing the
+// pane's sequence against a baseline from the old arrangement.
+func (m *Message) ClearBaseline() {
+	m.BaselineSeq = 0
+	m.BaselineSet = false
+	m.ObservedWorking = false
+	m.SettleSince = nil
 }
 
 func (m *Message) Summary() string {

@@ -209,22 +209,23 @@ func (e *Engine) advance(ctx context.Context, m *model.Message, snap *herdr.Snap
 func (e *Engine) advanceCompletion(ctx context.Context, m *model.Message, snap *herdr.Snapshot, now time.Time) ([]Event, error) {
 	pane, ok := snap.Resolve(m.Target)
 	if !ok {
-		if m.LastError == "" {
-			m.LastError = "目标面板已消失；按 p 重新选择"
-			return []Event{{Kind: EventDeferred, MessageID: m.ID, Title: m.Summary(), Detail: m.LastError, At: now}}, e.saveState(m)
-		}
-		return nil, nil
+		return e.park(m, pane, now, "目标面板已消失；按 p 重新选择", EventDeferred)
 	}
 	e.bindTarget(m, pane)
+
+	if snap.AgentSeqError != "" {
+		return e.park(m, pane, now, "herdr 未返回代理状态序号，无法判断是否完成；消息保持等待", EventDeferred)
+	}
 
 	switch pane.AgentStatus {
 	case herdr.StatusWorking:
 		var events []Event
 		changed := false
-		if m.BaselineSeq == 0 {
+		if !m.BaselineSet {
 			// Armed while herdr was unreachable: bind now so the task in flight
 			// counts as the completion to wait for.
 			m.BaselineSeq = pane.StateChangeSeq
+			m.BaselineSet = true
 			changed = true
 		}
 		if !m.ObservedWorking {
@@ -255,8 +256,14 @@ func (e *Engine) advanceCompletion(ctx context.Context, m *model.Message, snap *
 		return nil, nil
 
 	case herdr.StatusIdle, herdr.StatusDone:
-		if m.BaselineSeq == 0 {
+		if !m.BaselineSet {
 			m.BaselineSeq = pane.StateChangeSeq
+			m.BaselineSet = true
+			if m.LastError != "" {
+				m.LastError = ""
+				return []Event{{Kind: EventArmed, MessageID: m.ID, Title: m.Summary(),
+					Pane: pane.Display(), Detail: "已记录基线，等待下一次完成", At: now}}, e.saveState(m)
+			}
 			return nil, e.saveState(m)
 		}
 		if pane.StateChangeSeq == m.BaselineSeq {
@@ -278,15 +285,32 @@ func (e *Engine) advanceCompletion(ctx context.Context, m *model.Message, snap *
 		return ev, err
 
 	default:
-		if m.ObservedWorking {
-			if m.SettleSince != nil {
-				m.SettleSince = nil
-				return nil, e.saveState(m)
-			}
-			return nil, nil
-		}
+		// herdr cannot classify this pane: a plain shell, or an agent that has since
+		// exited. No state transition will ever be reported for it, so waiting is
+		// not a delay but a dead end. Say so instead of holding the message quietly.
+		return e.park(m, pane, now,
+			fmt.Sprintf("该面板没有可等待的代理（状态 %s）；请按 p 换面板，或用 s 立即发送", orNone(pane.AgentStatus)),
+			EventMissed)
+	}
+}
+
+// park records a standing explanation once and then stays quiet, so a condition
+// that outlasts many ticks does not emit an event or a disk write per tick.
+func (e *Engine) park(m *model.Message, pane herdr.Pane, now time.Time, detail string, kind EventKind) ([]Event, error) {
+	if m.LastError == detail {
 		return nil, nil
 	}
+	m.LastError = detail
+	m.SettleSince = nil
+	return []Event{{Kind: kind, MessageID: m.ID, Title: m.Summary(),
+		Pane: pane.Display(), Detail: detail, At: now}}, e.saveState(m)
+}
+
+func orNone(s string) string {
+	if s == "" {
+		return "无"
+	}
+	return s
 }
 
 // bindTarget caches what the resolved pane looks like so the list can show a live
@@ -308,30 +332,39 @@ func (e *Engine) bindTarget(m *model.Message, pane herdr.Pane) {
 }
 
 // Arm prepares a message for its trigger and returns it. For after_completion this
-// records the baseline sequence from the current herdr state.
+// records the baseline sequence from the current herdr state, and refuses a target
+// that has no completion to wait for rather than parking it silently.
 func (e *Engine) Arm(ctx context.Context, m *model.Message) (*herdr.Pane, error) {
 	snap, err := e.Snapshot(ctx)
 	if err != nil {
 		if m.Trigger.Kind == model.TriggerAfterCompletion {
 			m.Rebind(e.clock())
-			return nil, err
 		}
 		return nil, err
 	}
-	return e.armFrom(m, snap), nil
+	return e.armFrom(m, snap)
 }
 
-func (e *Engine) armFrom(m *model.Message, snap *herdr.Snapshot) *herdr.Pane {
+func (e *Engine) armFrom(m *model.Message, snap *herdr.Snapshot) (*herdr.Pane, error) {
 	now := e.clock()
 	m.Rebind(now)
 	pane, ok := snap.Resolve(m.Target)
 	if !ok {
-		return nil
+		return nil, nil
 	}
 	e.bindTarget(m, pane)
+	if m.Trigger.Kind == model.TriggerAfterCompletion {
+		if snap.AgentSeqError != "" {
+			return &pane, fmt.Errorf("herdr 未返回代理状态序号，无法判断完成；请先用 s 发送，或运行 `herdr-outbox doctor` 检查")
+		}
+		if !pane.Trackable() {
+			return &pane, fmt.Errorf("%s 上没有可识别的代理（状态 %s），没有\"完成\"可等待；请用 s 立即发送", pane.Display(), orNone(pane.AgentStatus))
+		}
+	}
 	m.BaselineSeq = pane.StateChangeSeq
+	m.BaselineSet = true
 	m.ObservedWorking = pane.AgentStatus == herdr.StatusWorking
-	return &pane
+	return &pane, nil
 }
 
 // SetTrigger re-arms a message with a new trigger.
@@ -353,9 +386,12 @@ func (e *Engine) SetTrigger(ctx context.Context, id string, kind model.TriggerKi
 		m.UpdatedAt = e.clock()
 		return m, e.saveEdit(m)
 	}
-	if _, err := e.Arm(ctx, m); err != nil {
+	if _, err := e.Arm(ctx, m); err != nil && !herdr.IsUnavailable(err) {
 		return m, err
 	}
+	// An unreachable herdr is not a reason to throw the change away: the message
+	// keeps the trigger the user picked, and the next tick records the baseline once
+	// the backend answers again.
 	return m, e.saveEdit(m)
 }
 

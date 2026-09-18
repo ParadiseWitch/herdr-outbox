@@ -549,3 +549,123 @@ func TestLedgerSurvivesReopen(t *testing.T) {
 		t.Fatal("unacked attempt reported as acked")
 	}
 }
+
+// shellPane models what `herdr pane list` reports for a plain terminal: a status
+// of `unknown` and no row in `agent list`, so no state_change_seq either.
+func TestAfterCompletionRejectsPaneWithoutAgent(t *testing.T) {
+	f := newFixture(t)
+	f.fake.SetStatus("w1:p2", herdr.StatusUnknown)
+	m := f.newMsg("to a shell\n", model.Target{Workspace: "w1", Pane: "w1:p2"}, model.TriggerAfterCompletion)
+	if _, err := f.engine.Arm(context.Background(), m); err == nil {
+		t.Fatal("arming on an unclassifiable pane must be refused, not parked silently")
+	}
+}
+
+// A message that was armed while the pane had an agent, and lost it afterwards,
+// has to explain itself once instead of sitting in `waiting` with no clue.
+func TestAfterCompletionExplainsAgentDisappearing(t *testing.T) {
+	f := newFixture(t)
+	m := f.arm(f.newMsg("orphaned\n", target, model.TriggerAfterCompletion))
+	f.fake.SetStatus("w1:p1", herdr.StatusUnknown)
+	var seen []Event
+	for i := 0; i < 10; i++ {
+		seen = append(seen, f.tick(time.Second)...)
+	}
+	if countKind(seen, EventMissed) != 1 {
+		t.Fatalf("want one explanation across 10 ticks, got %v", seen)
+	}
+	if got := f.reload(m.ID); got.LastError == "" {
+		t.Fatal("the stall has to be recorded on the message")
+	}
+}
+
+// `agent list` is the only read carrying state_change_seq. When it fails, every
+// pane reads seq 0 while still looking usable, which used to re-bind the baseline
+// forever and never fire.
+func TestAfterCompletionRefusesWhenSequenceReadFails(t *testing.T) {
+	f := newFixture(t)
+	m := f.arm(f.newMsg("no seq\n", target, model.TriggerAfterCompletion))
+	f.fake.NoAgentSeq = true
+	var seen []Event
+	for i := 0; i < 10; i++ {
+		seen = append(seen, f.tick(time.Second)...)
+	}
+	if countKind(seen, EventSent) != 0 {
+		t.Fatalf("sent without a completion edge: %+v", f.fake.Sends())
+	}
+	if countKind(seen, EventDeferred) != 1 {
+		t.Fatalf("want exactly one warning, got %v", seen)
+	}
+	if got := f.reload(m.ID); got.Status != model.StatusWaiting {
+		t.Fatalf("want the message held, got %v", got.Status)
+	}
+
+	f.fake.NoAgentSeq = false
+	f.fake.SetStatus("w1:p1", herdr.StatusWorking)
+	f.tick(time.Second)
+	f.fake.SetStatus("w1:p1", herdr.StatusIdle)
+	for i := 0; i < 8 && countKind(seen, EventSent) == 0; i++ {
+		seen = append(seen, f.tick(time.Second)...)
+	}
+	if countKind(seen, EventSent) != 1 {
+		t.Fatalf("a recovered seq read must let the message fire, got %v", seen)
+	}
+}
+
+// A freshly started agent has not changed state yet, so its baseline really is 0.
+// That must not be mistaken for "never armed".
+func TestAfterCompletionFiresFromZeroBaseline(t *testing.T) {
+	f := newFixture(t)
+	// Added raw because AddPane always assigns a sequence; a just-started agent has
+	// not changed state yet and legitimately reads 0.
+	f.fake.Panes = append(f.fake.Panes, herdr.Pane{ID: "w1:p3", WorkspaceID: "w1",
+		Agent: "qodercli", AgentStatus: herdr.StatusIdle})
+	fresh := model.Target{Workspace: "w1", Pane: "w1:p3"}
+	m := f.arm(f.newMsg("first transition\n", fresh, model.TriggerAfterCompletion))
+	if !m.BaselineSet {
+		t.Fatal("arming must record a baseline even when the sequence is still 0")
+	}
+	f.fake.SetStatus("w1:p3", herdr.StatusWorking)
+	f.tick(time.Second)
+	f.fake.SetStatus("w1:p3", herdr.StatusIdle)
+	var evs []Event
+	for i := 0; i < 8 && countKind(evs, EventSent) == 0; i++ {
+		evs = append(evs, f.tick(time.Second)...)
+	}
+	if countKind(evs, EventSent) != 1 {
+		t.Fatalf("a real transition from seq 0 must fire, got %v", evs)
+	}
+}
+
+// Picking a trigger is the user's instruction. A herdr outage delays the baseline,
+// it does not justify discarding the choice.
+func TestSetTriggerSurvivesUnreachableHerdr(t *testing.T) {
+	f := newFixture(t)
+	m := f.newMsg("wait for herdr\n", model.Target{Workspace: "w1", Pane: "w1:p1"}, model.TriggerManual)
+	f.fake.Unreachable = true
+	if _, err := f.engine.SetTrigger(context.Background(), m.ID, model.TriggerAfterCompletion, nil); err != nil {
+		t.Fatalf("set trigger during the outage: %v", err)
+	}
+	saved, err := f.st.Get(m.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.Trigger.Kind != model.TriggerAfterCompletion {
+		t.Fatalf("trigger lost during the outage: %q", saved.Trigger.Kind)
+	}
+	if saved.Status != model.StatusWaiting {
+		t.Fatalf("status = %s, want waiting", saved.Status)
+	}
+	if saved.BaselineSet {
+		t.Fatal("recorded a baseline it cannot have read")
+	}
+	f.fake.Unreachable = false
+	f.tick(time.Second)
+	after, err := f.st.Get(m.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !after.BaselineSet {
+		t.Fatal("the first tick after herdr returns must record the missing baseline")
+	}
+}

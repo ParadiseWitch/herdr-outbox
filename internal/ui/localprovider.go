@@ -43,9 +43,7 @@ func (p *LocalProvider) UpdateMessage(_ context.Context, id string, update api.U
 	}
 	if update.Status != nil {
 		m.Status = model.Status(*update.Status)
-		m.BaselineSeq = 0
-		m.ObservedWorking = false
-		m.SettleSince = nil
+		m.ClearBaseline()
 		m.LastError = ""
 	}
 	m.UpdatedAt = model.Now()

@@ -4,10 +4,12 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net"
 	"net/http"
+	"sync"
 	"time"
 
 	"herdr-outbox/internal/api"
@@ -16,16 +18,22 @@ import (
 )
 
 type Server struct {
-	store    *store.Store
-	engine   *scheduler.Engine
-	ledger   *scheduler.Ledger
+	store     *store.Store
+	engine    *scheduler.Engine
+	ledger    *scheduler.Ledger
 	broadcast *api.Broadcaster
-	dir      string
-	interval time.Duration
-	started  time.Time
+	dir       string
+	interval  time.Duration
+	started   time.Time
 
-	httpServer *http.Server
-	listener   net.Listener
+	httpServer  *http.Server
+	listener    net.Listener
+	schedCancel context.CancelFunc
+
+	// done is closed by RequestShutdown so the blocked main loop can return; an
+	// in-process HTTP handler cannot cancel the caller's context.
+	done chan struct{}
+	once sync.Once
 }
 
 func New(st *store.Store, engine *scheduler.Engine, ledger *scheduler.Ledger, dir string, interval time.Duration) *Server {
@@ -36,12 +44,16 @@ func New(st *store.Store, engine *scheduler.Engine, ledger *scheduler.Ledger, di
 		broadcast: api.NewBroadcaster(),
 		dir:       dir,
 		interval:  interval,
+		done:      make(chan struct{}),
 	}
 }
 
 // Start binds the listener, writes discovery files, and starts the HTTP server
 // and scheduler loop. It returns once the server is ready to accept connections.
 func (s *Server) Start(ctx context.Context) error {
+	if s.done == nil {
+		s.done = make(chan struct{})
+	}
 	mux := http.NewServeMux()
 	s.registerRoutes(mux)
 
@@ -61,6 +73,7 @@ func (s *Server) Start(ctx context.Context) error {
 	s.started = time.Now()
 
 	schedCtx, schedCancel := context.WithCancel(ctx)
+	s.schedCancel = schedCancel
 	go func() {
 		s.engine.Run(schedCtx, s.interval, func(ev scheduler.Event) {
 			s.broadcast.Publish(toAPIEvent(ev))
@@ -68,12 +81,7 @@ func (s *Server) Start(ctx context.Context) error {
 	}()
 
 	go func() {
-		<-schedCtx.Done()
-		schedCancel()
-	}()
-
-	go func() {
-		if err := s.httpServer.Serve(ln); err != nil && err != http.ErrServerClosed {
+		if err := s.httpServer.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Printf("server: %v", err)
 		}
 	}()
@@ -81,13 +89,38 @@ func (s *Server) Start(ctx context.Context) error {
 	return nil
 }
 
-// Stop gracefully shuts down the HTTP server, scheduler, and removes discovery files.
+// RequestShutdown asks Wait to return. It never blocks, so a handler can call it
+// while it is still holding an open response.
+func (s *Server) RequestShutdown() {
+	s.once.Do(func() { close(s.done) })
+}
+
+// Wait blocks until ctx is cancelled or a shutdown was requested, then drains.
+func (s *Server) Wait(ctx context.Context) error {
+	select {
+	case <-ctx.Done():
+	case <-s.done:
+	}
+	return s.Stop(context.Background())
+}
+
+// Stop cancels the scheduler, releases long-lived streams, and drains the
+// listener. Discovery files go first so a client reconnect cannot race back in.
 func (s *Server) Stop(ctx context.Context) error {
 	api.RemoveDiscovery(s.dir)
-	if s.httpServer != nil {
-		return s.httpServer.Shutdown(ctx)
+	s.RequestShutdown()
+	if s.schedCancel != nil {
+		s.schedCancel()
 	}
-	return nil
+	if s.httpServer == nil {
+		return nil
+	}
+	// Shutdown only waits for connections it considers idle, and an SSE stream is
+	// never idle, so closing the listener guarantees the drain finishes.
+	defer s.httpServer.Close()
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	return s.httpServer.Shutdown(ctx)
 }
 
 // Addr returns the listener address, available after Start.

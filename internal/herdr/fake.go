@@ -23,7 +23,10 @@ type Fake struct {
 	Stalled map[string]bool
 	// Blocked makes agent prompt refuse for a pane sitting at an approval dialog.
 	Blocked map[string]bool
-	seq     int64
+	// NoAgentSeq models an `agent list` read that failed: pane status still arrives,
+	// but state_change_seq does not.
+	NoAgentSeq bool
+	seq        int64
 }
 
 type FakeSend struct {
@@ -63,7 +66,14 @@ func (f *Fake) Snapshot(ctx context.Context) (*Snapshot, error) {
 	}
 	ws := make([]Workspace, len(f.Workspaces))
 	copy(ws, f.Workspaces)
-	return Build(ws, panes, agents), nil
+	snap := Build(ws, panes, agents)
+	if f.NoAgentSeq {
+		for i := range snap.Panes {
+			snap.Panes[i].StateChangeSeq = 0
+		}
+		snap.AgentSeqError = "fake: agent list unavailable"
+	}
+	return snap, nil
 }
 
 // SetStatus advances state_change_seq the way herdr does when an agent moves

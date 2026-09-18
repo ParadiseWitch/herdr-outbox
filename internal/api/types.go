@@ -4,15 +4,15 @@ package api
 import "time"
 
 type Message struct {
-	ID        string    `json:"id"`
-	Title     string    `json:"title,omitempty"`
-	Content   string    `json:"content"`
-	Target    Target    `json:"target"`
-	Trigger   Trigger   `json:"trigger"`
-	Status    string    `json:"status"`
-	Favorite  bool      `json:"favorite,omitempty"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	ID        string     `json:"id"`
+	Title     string     `json:"title,omitempty"`
+	Content   string     `json:"content"`
+	Target    Target     `json:"target"`
+	Trigger   Trigger    `json:"trigger"`
+	Status    string     `json:"status"`
+	Favorite  bool       `json:"favorite,omitempty"`
+	CreatedAt time.Time  `json:"created_at"`
+	UpdatedAt time.Time  `json:"updated_at"`
 	SentAt    *time.Time `json:"sent_at,omitempty"`
 
 	Attempts  int    `json:"attempts,omitempty"`
@@ -20,6 +20,7 @@ type Message struct {
 	SentVia   string `json:"sent_via,omitempty"`
 
 	BaselineSeq     int64      `json:"baseline_seq,omitempty"`
+	BaselineSet     bool       `json:"baseline_set,omitempty"`
 	ObservedWorking bool       `json:"observed_working,omitempty"`
 	SettleSince     *time.Time `json:"settle_since,omitempty"`
 }
@@ -43,6 +44,9 @@ type SnapshotResponse struct {
 	Panes      []Pane      `json:"panes"`
 	FetchedAt  time.Time   `json:"fetched_at"`
 	Source     string      `json:"source"`
+	// AgentSeqError means herdr could not supply state_change_seq, so completion
+	// triggers cannot be evaluated. Empty when the read succeeded.
+	AgentSeqError string `json:"agent_seq_error,omitempty"`
 }
 
 type Workspace struct {

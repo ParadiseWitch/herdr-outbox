@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/charmbracelet/x/ansi"
-	"github.com/mattn/go-runewidth"
 
 	"herdr-outbox/internal/herdr"
 	"herdr-outbox/internal/model"
@@ -118,28 +117,17 @@ func TestPanelsAreDividedOnEveryRow(t *testing.T) {
 	bodyStart, bodyEnd := 2, len(lines)-2
 	found := 0
 	for _, l := range lines[bodyStart:bodyEnd] {
-		if r, w := runeAtColumn(ansi.Strip(l), divCol); w == divCol && r == '│' {
+		plain := ansi.Strip(l)
+		// Measure with the same function the layout pads with. Walking rune by rune
+		// with runewidth disagrees about box drawing and symbols like ◎, and reports
+		// a divider that is perfectly aligned as one column off.
+		if i := strings.IndexRune(plain, '│'); i >= 0 && ansi.StringWidth(plain[:i]) == divCol {
 			found++
 		}
 	}
 	if found < bodyEnd-bodyStart-2 {
 		t.Fatalf("divider column present on %d of %d body rows", found, bodyEnd-bodyStart)
 	}
-}
-
-// runeAtColumn walks a plain string by terminal width, since CJK cells take two.
-func runeAtColumn(s string, col int) (rune, int) {
-	used := 0
-	for _, r := range s {
-		if used == col {
-			return r, used
-		}
-		used += runewidth.RuneWidth(r)
-		if used > col {
-			break
-		}
-	}
-	return 0, used
 }
 
 func TestStatusLineShowsLivePane(t *testing.T) {
@@ -191,5 +179,25 @@ func TestDetailListsTargetTriggerAndStatus(t *testing.T) {
 	}
 	if strings.Contains(view, "研究 / 研究") {
 		t.Fatalf("target repeated the workspace:\n%s", view)
+	}
+}
+
+// A waiting message can be waiting on something that will never happen. The list
+// has to say so rather than show a bare herdr status word.
+func TestWaitingRowShowsWhy(t *testing.T) {
+	m, st, _ := newTestModel(t, 116, 30)
+	if _, err := st.Create(&model.Message{
+		Content:   "to a shell",
+		Target:    model.Target{Workspace: "w1", WorkspaceLabel: "研究", Pane: "w1:p2"},
+		Trigger:   model.Trigger{Kind: model.TriggerAfterCompletion},
+		Status:    model.StatusWaiting,
+		LastError: "该面板没有可等待的代理",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	m.reload(t)
+	view := ansi.Strip(m.View())
+	if !strings.Contains(view, "等待中: 该面板没有可等待的代理") {
+		t.Fatalf("waiting row hides the reason:\n%s", view)
 	}
 }

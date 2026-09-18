@@ -74,6 +74,13 @@ func (c *CLI) call(ctx context.Context, timeout time.Duration, args ...string) (
 	if runCtx.Err() == context.DeadlineExceeded {
 		return nil, fmt.Errorf("herdr %s timed out after %s", strings.Join(args, " "), timeout)
 	}
+	var exitErr *exec.ExitError
+	if err != nil && !errors.As(err, &exitErr) {
+		// The process never started, so herdr was never asked: it is missing or not
+		// executable. Callers treat that as "no state available right now" rather
+		// than as a failed request, so it has to carry the sentinel.
+		return nil, fmt.Errorf("%w: %s: %v", ErrUnavailable, c.Bin, err)
+	}
 	if err != nil {
 		code, msg := parseCLIError(stderr.Bytes(), stdout.Bytes())
 		if code == "" && msg == "" {
@@ -82,7 +89,7 @@ func (c *CLI) call(ctx context.Context, timeout time.Duration, args ...string) (
 				msg = err.Error()
 			}
 		}
-		if exitErr := new(exec.ExitError); errors.As(err, &exitErr) && exitErr.ExitCode() == 2 {
+		if exitErr.ExitCode() == 2 {
 			return nil, &CLIError{Code: "cli_usage", Message: msg}
 		}
 		if code == "" && msg == "" {
@@ -149,10 +156,10 @@ func (c *CLI) herdrChildEnv() []string {
 
 func (c *CLI) Probe(ctx context.Context) error {
 	_, err := c.call(ctx, c.ReadTimeout, "workspace", "list")
-	if err != nil {
+	if err != nil && !IsUnavailable(err) {
 		return fmt.Errorf("%w: %v", ErrUnavailable, err)
 	}
-	return nil
+	return err
 }
 
 func (c *CLI) Snapshot(ctx context.Context) (*Snapshot, error) {
@@ -178,19 +185,30 @@ func (c *CLI) Snapshot(ctx context.Context) (*Snapshot, error) {
 		return nil, err
 	}
 
-	// agent list adds state_change_seq, which pane list omits. Older herdr
-	// versions may not expose it, so a failure here is not fatal.
+	// agent list is the only read carrying state_change_seq, which is what proves a
+	// completion actually happened. Older herdr versions may not expose it, so a
+	// failure here is not fatal — but it has to be visible, or every armed message
+	// silently waits for an edge that can never arrive.
 	var agents []Pane
-	if agentRaw, aerr := c.call(ctx, c.ReadTimeout, "agent", "list"); aerr == nil {
+	agentRaw, aerr := c.call(ctx, c.ReadTimeout, "agent", "list")
+	if aerr != nil {
+		aerr = fmt.Errorf("agent list: %w", aerr)
+	}
+	if aerr == nil {
 		var as struct {
 			Agents []Pane `json:"agents"`
 		}
-		if uerr := json.Unmarshal(agentRaw, &as); uerr == nil {
+		if uerr := json.Unmarshal(agentRaw, &as); uerr != nil {
+			aerr = fmt.Errorf("agent list: %w", uerr)
+		} else {
 			agents = as.Agents
 		}
 	}
 
 	snap := Build(ws.Workspaces, ps.Panes, agents)
+	if aerr != nil {
+		snap.AgentSeqError = aerr.Error()
+	}
 	snap.Source = c.Bin
 	return snap, nil
 }
@@ -275,11 +293,7 @@ func (c *CLI) ReadPane(ctx context.Context, paneID string, lines int) (string, e
 				msg = err.Error()
 			}
 		}
-		if code == "pane_not_found" {
-			return "", &CLIError{Code: code, Message: msg}
-		}
 		return "", &CLIError{Code: code, Message: msg}
 	}
 	return stdout.String(), nil
 }
-

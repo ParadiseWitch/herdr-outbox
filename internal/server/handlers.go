@@ -1,7 +1,6 @@
 package server
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -25,6 +24,17 @@ func (s *Server) handleListMessages(w http.ResponseWriter, r *http.Request) {
 		out[i] = toAPIMessage(m)
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// writeBackendError reports a scheduler failure. An unreachable herdr is the one
+// the client can act on — it still arms a message without a live snapshot — so it
+// travels as 502 rather than as a string the client cannot pattern-match.
+func writeBackendError(w http.ResponseWriter, err error) {
+	if herdr.IsUnavailable(err) {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeError(w, http.StatusInternalServerError, err.Error())
 }
 
 func (s *Server) handleGetMessage(w http.ResponseWriter, r *http.Request) {
@@ -81,9 +91,7 @@ func (s *Server) handleUpdateMessage(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Status != nil {
 		m.Status = model.Status(*req.Status)
-		m.BaselineSeq = 0
-		m.ObservedWorking = false
-		m.SettleSince = nil
+		m.ClearBaseline()
 		m.LastError = ""
 	}
 	m.UpdatedAt = model.Now()
@@ -155,7 +163,7 @@ func (s *Server) handleSendNow(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	events, err := s.engine.SendNow(r.Context(), id)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeBackendError(w, err)
 		return
 	}
 	apiEvs := make([]api.Event, len(events))
@@ -180,7 +188,7 @@ func (s *Server) handleSetTrigger(w http.ResponseWriter, r *http.Request) {
 	}
 	m, err := s.engine.SetTrigger(r.Context(), id, kind, req.SendAt)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeBackendError(w, err)
 		return
 	}
 	s.broadcast.Publish(api.Event{Kind: "message_updated", MessageID: m.ID, Title: m.Summary(), At: time.Now()})
@@ -203,7 +211,7 @@ func (s *Server) handleSetTarget(w http.ResponseWriter, r *http.Request) {
 	}
 	m, err := s.engine.SetTarget(r.Context(), id, t)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeBackendError(w, err)
 		return
 	}
 	s.broadcast.Publish(api.Event{Kind: "message_updated", MessageID: m.ID, Title: m.Summary(), At: time.Now()})
@@ -213,7 +221,7 @@ func (s *Server) handleSetTarget(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleSnapshot(w http.ResponseWriter, r *http.Request) {
 	snap, err := s.engine.Snapshot(r.Context())
 	if err != nil {
-		writeError(w, http.StatusBadGateway, err.Error())
+		writeBackendError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, toAPISnapshot(snap))
@@ -270,9 +278,13 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	defer s.broadcast.Unsubscribe(id)
 
 	ctx := r.Context()
+	done := s.done
 	for {
 		select {
 		case <-ctx.Done():
+			return
+		case <-done:
+			// A graceful drain never finishes while a stream is open, so release it.
 			return
 		case ev, ok := <-ch:
 			if !ok {
@@ -287,10 +299,7 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleServerStop(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"ok": "stopping"})
-	go func() {
-		time.Sleep(100 * time.Millisecond)
-		s.Stop(context.Background())
-	}()
+	s.RequestShutdown()
 }
 
 func (s *Server) handleReadPane(w http.ResponseWriter, r *http.Request) {
@@ -319,20 +328,21 @@ func isNotFound(err error) bool {
 
 func toAPIMessage(m *model.Message) api.Message {
 	return api.Message{
-		ID:        m.ID,
-		Title:     m.Title,
-		Content:   m.Content,
-		Target:    toAPITarget(m.Target),
-		Trigger:   toAPITrigger(m.Trigger),
-		Status:    string(m.Status),
-		Favorite:  m.Favorite,
-		CreatedAt: m.CreatedAt,
-		UpdatedAt: m.UpdatedAt,
-		SentAt:    m.SentAt,
-		Attempts:  m.Attempts,
-		LastError: m.LastError,
-		SentVia:   m.SentVia,
+		ID:              m.ID,
+		Title:           m.Title,
+		Content:         m.Content,
+		Target:          toAPITarget(m.Target),
+		Trigger:         toAPITrigger(m.Trigger),
+		Status:          string(m.Status),
+		Favorite:        m.Favorite,
+		CreatedAt:       m.CreatedAt,
+		UpdatedAt:       m.UpdatedAt,
+		SentAt:          m.SentAt,
+		Attempts:        m.Attempts,
+		LastError:       m.LastError,
+		SentVia:         m.SentVia,
 		BaselineSeq:     m.BaselineSeq,
+		BaselineSet:     m.BaselineSet,
 		ObservedWorking: m.ObservedWorking,
 		SettleSince:     m.SettleSince,
 	}
@@ -397,29 +407,32 @@ func toAPISnapshot(snap *herdr.Snapshot) api.SnapshotResponse {
 		}
 	}
 	return api.SnapshotResponse{
-		Workspaces: ws,
-		Panes:      panes,
-		FetchedAt:  snap.FetchedAt,
-		Source:     snap.Source,
+		Workspaces:    ws,
+		Panes:         panes,
+		FetchedAt:     snap.FetchedAt,
+		Source:        snap.Source,
+		AgentSeqError: snap.AgentSeqError,
 	}
 }
 
 func fromAPIMessage(a *api.Message) *model.Message {
 	return &model.Message{
-		ID:        a.ID,
-		Title:     a.Title,
-		Content:   a.Content,
-		Target:    fromAPITarget(a.Target),
-		Trigger:   fromAPITrigger(a.Trigger),
-		Status:    model.Status(a.Status),
-		Favorite:  a.Favorite,
-		CreatedAt: a.CreatedAt,
-		UpdatedAt: a.UpdatedAt,
-		SentAt:    a.SentAt,
-		Attempts:  a.Attempts,
-		LastError: a.LastError,
-		SentVia:   a.SentVia,
-		BaselineSeq:     a.BaselineSeq,
+		ID:          a.ID,
+		Title:       a.Title,
+		Content:     a.Content,
+		Target:      fromAPITarget(a.Target),
+		Trigger:     fromAPITrigger(a.Trigger),
+		Status:      model.Status(a.Status),
+		Favorite:    a.Favorite,
+		CreatedAt:   a.CreatedAt,
+		UpdatedAt:   a.UpdatedAt,
+		SentAt:      a.SentAt,
+		Attempts:    a.Attempts,
+		LastError:   a.LastError,
+		SentVia:     a.SentVia,
+		BaselineSeq: a.BaselineSeq,
+		// BaselineSet stays false: this path creates messages, and nothing is armed
+		// until Arm records a real sequence.
 		ObservedWorking: a.ObservedWorking,
 		SettleSince:     a.SettleSince,
 	}
