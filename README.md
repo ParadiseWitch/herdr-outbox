@@ -11,7 +11,7 @@ herdr 负责运行 Agent，herdr-outbox 负责排队和调度。
 - **三种触发方式**：手动、目标代理完成后、指定时间
 - **面板选择器**：从 herdr 实时拓扑里挑目标，可预览面板内容，不用手抄 ID
 - **两种编辑方式**：TUI 内置编辑器，或交给 `$EDITOR`
-- **Markdown 存储**：每条消息是一个 `.md` 文件，可以直接用 git 管理、手工编辑
+- **文件存储**：每条消息是一个 Markdown 文件（YAML frontmatter + 正文），没有数据库，可以直接 git 管理和手工编辑
 - **跨平台**：Windows、Linux、macOS；`--dry-run` 内置模拟后端可离线试用
 
 ## 安装
@@ -143,7 +143,7 @@ herdr-outbox config editor builtin      # 回到 TUI 内编辑
 
 herdr 暂时不可达时，触发设置依然会保存下来，等后端恢复后自动补记基线；不会因为一次连不上就丢掉你的选择。
 
-## 配置与数据
+## 配置
 
 配置在消息目录下的 `config.yaml`：
 
@@ -151,18 +151,42 @@ herdr 暂时不可达时，触发设置依然会保存下来，等后端恢复�
 editor: builtin      # builtin | external
 ```
 
-消息目录默认是用户配置目录下的 `herdr-outbox`（Windows：`%APPDATA%\herdr-outbox`；Linux/macOS：`~/.config/herdr-outbox`），可用 `--dir` 或 `$HERDR_OUTBOX_DIR` 覆盖。目录内容：
+消息目录默认是用户配置目录下的 `herdr-outbox`（Windows：`%APPDATA%\herdr-outbox`；Linux/macOS：`~/.config/herdr-outbox`），可用 `--dir` 或 `$HERDR_OUTBOX_DIR` 覆盖。
 
-```text
-<id>.md              消息（frontmatter + 正文，可直接手改）
-config.yaml          配置
-server.log           后台服务日志
-dispatch-log.jsonl   调度记录（发送、跳过、推迟、失败原因）
-.server-pid          服务进程号
-.server-port         服务端口
+## 存储格式
+
+没有数据库。每条消息就是目录下的一个 Markdown 文件：开头是 `---` 包起来的 YAML frontmatter（元数据），之后是正文，正文就是要发给代理的内容。下面是 `herdr-outbox new "…"` 生成的真实文件：
+
+```markdown
+---
+id: 20260918-160840-cd7c
+title: 检查 Redis 缓存，确认刚才的修改没有打挂缓存键
+target: {}
+trigger:
+    kind: manual
+    settle_seconds: 3
+status: draft
+created_at: 2026-09-18T16:08:40.5965284+08:00
+updated_at: 2026-09-18T16:08:40.5965284+08:00
+---
+
+检查 Redis 缓存，确认刚才的修改没有打挂缓存键
 ```
 
-调度日志用 `herdr-outbox log` 或 TUI 里的 `l` 查看，包含每一次发送、跳过、推迟、失败的原因。
+- TUI 和编辑器只改 `---` 之后的正文，frontmatter 由程序维护
+- 手工编辑 frontmatter 同样有效：程序每次都从磁盘重读，比如把 `status: sent` 改回 `draft`，消息就回到待发
+- 所以整个目录可以直接进 git，每条消息对应一个文件、改动对应一次 diff
+
+目录里其余文件不是 Markdown：
+
+| 文件 | 格式 | 用途 |
+| --- | --- | --- |
+| `dispatch-log.jsonl` | JSON Lines | 每次发送、跳过、推迟、失败的调度记录（幂等依据） |
+| `server.log` | 纯文本 | 后台服务日志 |
+| `.server-pid` / `.server-port` | 纯文本 | 服务进程发现 |
+| `config.yaml` | YAML | 配置 |
+
+调度日志用 `herdr-outbox log` 或 TUI 里的 `l` 查看。
 
 ## 架构
 
