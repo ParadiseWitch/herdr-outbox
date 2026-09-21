@@ -40,6 +40,8 @@ func (m *Model) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.onTriggerPickerKey(key)
 	case modeRename:
 		return m.onRenameKey(msg)
+	case modeWorkspaceFilter:
+		return m.onWorkspaceFilterKey(key)
 	}
 
 	ctx := context.Background()
@@ -51,12 +53,6 @@ func (m *Model) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 
 	case "q":
-		if m.filter != filterAll {
-			m.filter = filterAll
-			m.restoreCursor()
-			m.setNotice("筛选: 全部")
-			return m, nil
-		}
 		m.quitting = true
 		return m, tea.Quit
 
@@ -86,11 +82,12 @@ func (m *Model) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case "tab":
-		if m.focus == focusList {
-			m.focus = focusDetail
-		} else {
-			m.focus = focusList
-		}
+		m.filter.Status = filterMode((int(m.filter.Status) + 1) % 3)
+		m.restoreCursor()
+		return m, nil
+	case "shift+tab":
+		m.filter.Status = filterMode((int(m.filter.Status) + 2) % 3)
+		m.restoreCursor()
 		return m, nil
 	case "ctrl+d":
 		return m.scrollDetail(10)
@@ -101,10 +98,21 @@ func (m *Model) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "ctrl+b":
 		return m.scrollDetail(-m.detailHeight())
 
-	case "x":
-		m.filter = filterMode((int(m.filter) + 1) % 3)
+	case "1":
+		m.filter.Status = filterAll
 		m.restoreCursor()
-		m.setNotice("筛选: " + m.filter.Label())
+		return m, nil
+	case "2":
+		m.filter.Status = filterOpen
+		m.restoreCursor()
+		return m, nil
+	case "3":
+		m.filter.Status = filterSent
+		m.restoreCursor()
+		return m, nil
+
+	case "x":
+		m.openWorkspaceFilter()
 		return m, nil
 
 	case "r":
@@ -223,13 +231,9 @@ func (m *Model) onConfirmKey(key string) (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) newMessage(ctx context.Context) (tea.Model, tea.Cmd) {
-	tpl := m.defaultTarget()
-	content := ""
 	msg := &model.Message{
-		Target:  tpl,
 		Trigger: model.Trigger{Kind: model.TriggerManual, SettleSeconds: 3},
 		Status:  model.StatusDraft,
-		Content: content,
 	}
 	created, err := m.provider.CreateMessage(ctx, msg)
 	if err != nil {
@@ -239,25 +243,6 @@ func (m *Model) newMessage(ctx context.Context) (tea.Model, tea.Cmd) {
 	m.selectedID = created.ID
 	m.setNotice("编辑中 " + created.ID)
 	return m, tea.Batch(m.loadMsg(), m.editCmd(created.ID))
-}
-
-// defaultTarget pre-fills the focused herdr pane so a new note is addressed
-// without typing identifiers.
-func (m *Model) defaultTarget() model.Target {
-	if m.snapshot == nil {
-		return model.Target{}
-	}
-	for _, p := range m.snapshot.Panes {
-		if p.Focused {
-			return targetOf(p)
-		}
-	}
-	for _, p := range m.snapshot.Panes {
-		if p.HasAgent() {
-			return targetOf(p)
-		}
-	}
-	return model.Target{}
 }
 
 func targetOf(p herdr.Pane) model.Target { return p.Target() }
@@ -430,6 +415,13 @@ func (m *Model) confirmSchedule(key string) (tea.Model, tea.Cmd) {
 
 func (m *Model) applyTrigger(kind model.TriggerKind, sendAt *time.Time) (tea.Model, tea.Cmd) {
 	id := m.picker.target
+	sel := m.byID(id)
+	if sel != nil && kind != model.TriggerManual && sel.Target.Pane == "" {
+		m.picker = picker{}
+		m.mode = modeBrowse
+		m.setNotice("未设置目标面板；按 p 选择")
+		return m, nil
+	}
 	m.picker = picker{}
 	m.mode = modeBrowse
 	ctx := context.Background()

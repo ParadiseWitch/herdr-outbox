@@ -199,7 +199,9 @@ func (c *Client) Events(ctx context.Context) (<-chan api.Event, error) {
 		return nil, err
 	}
 	req.Header.Set("Accept", "text/event-stream")
-	resp, err := c.httpClient.Do(req)
+	noTimeout := *c.httpClient
+	noTimeout.Timeout = 0
+	resp, err := noTimeout.Do(req)
 	if err != nil {
 		return nil, err
 	}

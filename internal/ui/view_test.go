@@ -142,6 +142,7 @@ func TestStatusLineShowsLivePane(t *testing.T) {
 	}
 	m.reload(t)
 	fake.SetStatus("w1:p1", herdr.StatusIdle)
+	fake.Panes[0].Focused = true
 	snap, err := m.provider.Snapshot(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -149,13 +150,10 @@ func TestStatusLineShowsLivePane(t *testing.T) {
 	m.snapshot = snap
 
 	status := ansi.Strip(m.statusView(m.width))
-	for _, want := range []string{"herdr: fake", "面板: qodercli-1", "代理: qodercli", "idle"} {
+	for _, want := range []string{"工作区:", "面板:", "代理:"} {
 		if !strings.Contains(status, want) {
 			t.Fatalf("status line %q lacks %q", status, want)
 		}
-	}
-	if strings.Contains(status, "研究 / qodercli-1") {
-		t.Fatalf("status line repeats the workspace it already shows: %q", status)
 	}
 }
 

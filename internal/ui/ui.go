@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/charmbracelet/bubbles/textarea"
@@ -30,6 +31,7 @@ const (
 	modeLog
 	modeRename
 	modeEdit
+	modeWorkspaceFilter
 )
 
 type focusArea int
@@ -56,6 +58,24 @@ func (f filterMode) Label() string {
 	default:
 		return "全部"
 	}
+}
+
+type messageFilter struct {
+	Status filterMode
+	Panes  map[string]bool // pane ID -> selected
+}
+
+func (f messageFilter) Active() bool {
+	return f.Status != filterAll || len(f.Panes) > 0
+}
+
+func (f messageFilter) Label() string {
+	parts := []string{f.Status.Label()}
+	if len(f.Panes) > 0 {
+		paneCount := len(f.Panes)
+		parts = append(parts, fmt.Sprintf("%d 个面板", paneCount))
+	}
+	return strings.Join(parts, " · ")
 }
 
 type (
@@ -85,6 +105,10 @@ type (
 		id      string
 		content string
 	}
+
+	sseEventMsg struct{ event api.Event }
+
+	sseClosedMsg struct{}
 )
 
 type tickMsg time.Time
@@ -103,6 +127,7 @@ type Model struct {
 	provider dataprovider.DataProvider
 	sched    dataprovider.Scheduler
 	poll     time.Duration
+	eventCh  <-chan api.Event
 
 	width, height int
 	ready         bool
@@ -110,7 +135,7 @@ type Model struct {
 	msgs       []*model.Message
 	cursor     int
 	selectedID string
-	filter     filterMode
+	filter     messageFilter
 	focus      focusArea
 
 	snapshot *herdr.Snapshot
@@ -167,6 +192,10 @@ func (m *Model) Init() tea.Cmd {
 	if m.sched != nil {
 		cmds = append(cmds, m.reconcileCmd())
 	}
+	if ch, err := m.provider.Events(context.Background()); err == nil && ch != nil {
+		m.eventCh = ch
+		cmds = append(cmds, m.readEventCmd())
+	}
 	return tea.Batch(cmds...)
 }
 
@@ -198,6 +227,32 @@ func (m *Model) reconcileCmd() tea.Cmd {
 		return stepDoneMsg{events: evs}
 	}
 }
+
+func (m *Model) readEventCmd() tea.Cmd {
+	if m.eventCh == nil {
+		return nil
+	}
+	return func() tea.Msg {
+		ev, ok := <-m.eventCh
+		if !ok {
+			return sseClosedMsg{}
+		}
+		return sseEventMsg{event: ev}
+	}
+}
+
+func (m *Model) reconnectCmd() tea.Cmd {
+	return func() tea.Msg {
+		time.Sleep(3 * time.Second)
+		ch, err := m.provider.Events(context.Background())
+		if err != nil || ch == nil {
+			return sseClosedMsg{}
+		}
+		return sseReconnectMsg{ch: ch}
+	}
+}
+
+type sseReconnectMsg struct{ ch <-chan api.Event }
 
 func (m *Model) stepCmd() tea.Cmd {
 	if m.sched == nil {
@@ -273,6 +328,25 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case sseEventMsg:
+		se := scheduler.Event{
+			Kind:      scheduler.EventKind(msg.event.Kind),
+			MessageID: msg.event.MessageID,
+			Title:     msg.event.Title,
+			Pane:      msg.event.Pane,
+			Detail:    msg.event.Detail,
+			At:        msg.event.At,
+		}
+		m.appendEvents([]scheduler.Event{se})
+		return m, tea.Batch(m.loadMsg(), m.readEventCmd())
+
+	case sseClosedMsg:
+		return m, m.reconnectCmd()
+
+	case sseReconnectMsg:
+		m.eventCh = msg.ch
+		return m, tea.Batch(m.loadMsg(), m.readEventCmd())
+
 	case loadedMsg:
 		m.msgs = msg.msgs
 		m.restoreCursor()
@@ -326,9 +400,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case panePreviewMsg:
 		// Only update if this is still the selected pane.
-		if m.mode == modeTargetPicker && m.picker.step == 1 && m.picker.cursor < len(m.picker.items) {
-			item := m.picker.items[m.picker.cursor]
-			if item.pane.ID == msg.paneID {
+		if (m.mode == modeTargetPicker || m.mode == modeWorkspaceFilter) && m.picker.cursor < len(m.picker.treeItems) {
+			item := m.picker.treeItems[m.picker.cursor]
+			if !item.isParent && item.pane.ID == msg.paneID {
 				m.picker.panePreview = msg.content
 				m.picker.panePreviewPane = msg.paneID
 			}
@@ -360,7 +434,7 @@ func (m *Model) logResize() {}
 func (m *Model) visible() []*model.Message {
 	out := make([]*model.Message, 0, len(m.msgs))
 	for _, msg := range m.msgs {
-		switch m.filter {
+		switch m.filter.Status {
 		case filterOpen:
 			if msg.Status == model.StatusSent {
 				continue
@@ -369,6 +443,9 @@ func (m *Model) visible() []*model.Message {
 			if msg.Status != model.StatusSent {
 				continue
 			}
+		}
+		if len(m.filter.Panes) > 0 && !m.filter.Panes[msg.Target.Pane] {
+			continue
 		}
 		out = append(out, msg)
 	}

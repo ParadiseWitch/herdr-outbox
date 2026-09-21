@@ -106,7 +106,12 @@ func (m *Model) headerView(width int) string {
 		stDim.Render(fmt.Sprintf("%d 待处理", counts.open)),
 		stDim.Render(fmt.Sprintf("%d 已就绪", counts.armed)),
 		stDim.Render(fmt.Sprintf("%d 已发送", counts.sent))}
-	parts = append(parts, stDim.Render("│"), stDim.Render("筛选: "+m.filter.Label()))
+	parts = append(parts, stDim.Render("│"), stDim.Render("筛选: "))
+	if m.filter.Active() {
+		parts = append(parts, stTitle.Render(m.filter.Label()))
+	} else {
+		parts = append(parts, stDim.Render(m.filter.Label()))
+	}
 	if m.stepActive {
 		parts = append(parts, stWarn.Render("轮询中…"))
 	}
@@ -131,8 +136,31 @@ func (m *Model) noticeView(width int) string {
 }
 
 func (m *Model) listView(width, height int) string {
+	// Status tabs
+	tabs := []struct {
+		key   string
+		label string
+		mode  filterMode
+	}{
+		{"1", "全部", filterAll},
+		{"2", "待处理", filterOpen},
+		{"3", "已发送", filterSent},
+	}
+	tabLine := []string{}
+	for i, tab := range tabs {
+		label := tab.label
+		if m.filter.Status == tab.mode {
+			tabLine = append(tabLine, stSelected.Render(" "+label+" "))
+		} else {
+			tabLine = append(tabLine, stDim.Render(" "+label+" "))
+		}
+		if i < len(tabs)-1 {
+			tabLine = append(tabLine, stDim.Render(" "))
+		}
+	}
+	
 	head := stDim.Render(" 发件箱")
-	lines := []string{head, strings.Repeat("─", max(width, 1))}
+	lines := []string{head, strings.Join(tabLine, ""), strings.Repeat("─", max(width, 1))}
 	list := m.visible()
 	if len(list) == 0 {
 		empty := "  还没有消息"
@@ -242,13 +270,13 @@ func (m *Model) metaFor(msg *model.Message) string {
 func statusGlyph(s model.Status) string {
 	switch s {
 	case model.StatusSent:
-		return "✔"
+		return "●"
 	case model.StatusFailed:
-		return "✘"
+		return "●"
 	case model.StatusSending:
-		return "✦"
+		return "●"
 	case model.StatusWaiting:
-		return "◎"
+		return "◉"
 	case model.StatusScheduled:
 		return "◷"
 	case model.StatusPending:
@@ -276,7 +304,7 @@ func styleByStatus(s model.Status) lipgloss.Style {
 }
 
 func (m *Model) detailPanel(width, height int) string {
-	lines := []string{stDim.Render(" 消息"), strings.Repeat("─", max(width, 1))}
+	lines := []string{stDim.Render(" 消息"), "", strings.Repeat("─", max(width, 1))}
 	sel := m.selected()
 	if sel == nil {
 		lines = append(lines, "", stDim.Render("  选择一条消息，或按 n 新建"))
@@ -343,6 +371,15 @@ func (m *Model) metaBlock(sel *model.Message, width int) []string {
 		stDim.Render(truncateWidth(trigger, width)),
 		styleByStatus(sel.Status).Render("状态: " + sel.Status.Label()),
 	}
+	if !sel.CreatedAt.IsZero() {
+		out = append(out, stDim.Render(truncateWidth("创建: "+sel.CreatedAt.Format("2006-01-02 15:04:05"), width)))
+	}
+	if !sel.UpdatedAt.IsZero() && !sel.UpdatedAt.Equal(sel.CreatedAt) {
+		out = append(out, stDim.Render(truncateWidth("修改: "+sel.UpdatedAt.Format("2006-01-02 15:04:05"), width)))
+	}
+	if sel.SentAt != nil {
+		out = append(out, stDim.Render(truncateWidth("发送: "+sel.SentAt.Format("2006-01-02 15:04:05"), width)))
+	}
 	if sel.SentVia != "" {
 		out = append(out, stDim.Render(truncateWidth("发送方式: "+sel.SentVia, width)))
 	}
@@ -380,57 +417,22 @@ func renderMarkdownLine(line string, width int) string {
 
 func (m *Model) statusView(width int) string {
 	parts := []string{}
-	label := "herdr: " + m.provider.BackendName()
-	focusedWS := ""
-	if m.snapshot != nil {
-		if m.poll > 0 && time.Since(m.snapshot.FetchedAt) > 3*time.Duration(m.poll) {
-			label += " 已过期"
-		}
-		if m.snapshot.AgentSeqError != "" {
-			label += " │ 无代理序号"
-		}
-		ws := ""
-		for _, w := range m.snapshot.Workspaces {
-			if w.Focused {
-				ws = w.Display()
-			}
-		}
-		focusedWS = ws
-		if ws != "" {
-			label += " │ " + ws
-		}
-	}
-	parts = append(parts, stDim.Render(label))
 
 	sel := m.selected()
 	if sel != nil {
+		if sel.Target.WorkspaceLabel != "" {
+			parts = append(parts, stDim.Render("工作区:"), stTitle.Render(sel.Target.WorkspaceLabel))
+		}
 		if pane, ok := m.paneFor(sel); ok {
-			agent := pane.Agent
-			if agent == "" {
-				agent = "shell"
+			parts = append(parts, stDim.Render("面板:"), stTitle.Render(pane.Title()))
+			if pane.Agent != "" {
+				parts = append(parts, stDim.Render("代理:"), stTitle.Render(pane.Agent), statusStyle(pane.AgentStatus).Render(pane.AgentStatus))
 			}
-			status := pane.AgentStatus
-			if status == "" {
-				status = "unknown"
-			}
-			// The workspace is already on the bar, so name the pane again only when
-			// the message points somewhere else.
-			paneLabel := pane.Name()
-			if focusedWS != "" && pane.WsLabel != focusedWS {
-				paneLabel = pane.Display()
-			}
-			parts = append(parts,
-				stDim.Render("面板:"), paneLabel,
-				stDim.Render("代理:"), agent,
-				statusStyle(status).Render(status),
-			)
-			if sid := pane.SessionID(); sid != "" {
-				parts = append(parts, stDim.Render("会话:"+truncate(sid, 8)))
-			}
-		} else {
+		} else if sel.Target.Pane != "" {
 			parts = append(parts, stAlert.Render("目标面板已消失"))
 		}
 	}
+
 	parts = append(parts, stDim.Render("·"), stDim.Render("? 帮助"))
 	return fit(joinParts(parts), width)
 }
@@ -459,12 +461,11 @@ func (m *Model) overlayView(width, bodyHeight int) string {
 	case modeLog:
 		return padBlock(strings.Split(m.logOverlay(width, bodyHeight), "\n"), width, bodyHeight)
 	case modeTargetPicker:
-		if m.picker.step == 1 {
-			return m.pickerSplitView(width, bodyHeight)
-		}
-		return padBlock(strings.Split(m.pickerOverlay(width, bodyHeight), "\n"), width, bodyHeight)
+		return m.treePickerSplitView(width, bodyHeight)
 	case modeTriggerPicker:
 		return padBlock(strings.Split(m.pickerOverlay(width, bodyHeight), "\n"), width, bodyHeight)
+	case modeWorkspaceFilter:
+		return m.workspaceFilterSplitView(width, bodyHeight)
 	case modeConfirmDelete:
 		return padBlock(strings.Split(m.confirmOverlay(width), "\n"), width, bodyHeight)
 	case modeRename:
@@ -560,21 +561,243 @@ func (m *Model) pickerRightPanel(width, bodyHeight int) string {
 	return padBlock(out, width, bodyHeight)
 }
 
+// treePickerSplitView renders the target picker as a tree with a side-by-side layout.
+func (m *Model) treePickerSplitView(width, bodyHeight int) string {
+	leftW := width * 40 / 100
+	if leftW < 30 {
+		leftW = 30
+	}
+	if leftW > width-20 {
+		leftW = width - 20
+	}
+	rightW := width - leftW - 1
+
+	leftPanel := m.treePickerLeftPanel(leftW, bodyHeight)
+	rightPanel := m.treePickerRightPanel(rightW, bodyHeight)
+
+	divider := strings.TrimRight(strings.Repeat("│\n", bodyHeight), "\n")
+	joined := lipgloss.JoinHorizontal(lipgloss.Top, leftPanel, divider, rightPanel)
+	return joined
+}
+
+func (m *Model) treePickerLeftPanel(width, bodyHeight int) string {
+	p := &m.picker
+	out := []string{stTitle.Render(p.title)}
+	avail := max(bodyHeight-4, 3)
+	if len(p.treeItems) == 0 {
+		out = append(out, "", stDim.Render("  没有可用的工作区或面板"))
+		out = append(out, stDim.Render("  esc 返回"))
+		return padBlock(out, width, bodyHeight)
+	}
+	window := listWindow(p.cursor, len(p.treeItems), avail)
+	if window.start > 0 {
+		out = append(out, stDim.Render("  ↑ "+strconv.Itoa(window.start)+" 更多"))
+	}
+	for i := window.start; i < window.end; i++ {
+		item := p.treeItems[i]
+		var prefix, label string
+		if item.isParent {
+			if item.expanded {
+				prefix = "▾ "
+			} else {
+				prefix = "▸ "
+			}
+			label = prefix + truncateWidth(item.label, width-6)
+			if i == p.cursor {
+				out = append(out, stSelected.Render(pad(label, width-1)))
+			} else {
+				out = append(out, stTitle.Render(label)+stDim.Render("  "+item.hint))
+			}
+		} else {
+			prefix = "  "
+			label = prefix + truncateWidth(item.label, width-6)
+			if i == p.cursor {
+				out = append(out, stSelected.Render(pad(label, width-1)))
+			} else {
+				out = append(out, label+stDim.Render("  "+item.hint))
+			}
+		}
+	}
+	if window.end < len(p.treeItems) {
+		out = append(out, stDim.Render("  ↓ "+strconv.Itoa(len(p.treeItems)-window.end)+" 更多"))
+	}
+	out = append(out, "", stDim.Render("↑↓ 移动 · ←→/回车 展开 · 回车选择 · esc 返回"))
+	return padBlock(out, width, bodyHeight)
+}
+
+func (m *Model) treePickerRightPanel(width, bodyHeight int) string {
+	p := &m.picker
+	out := []string{stDim.Render(" 面板预览")}
+	out = append(out, strings.Repeat("─", max(width, 1)))
+
+	if p.cursor >= len(p.treeItems) {
+		out = append(out, "", stDim.Render("  选择面板以预览内容"))
+		return padBlock(out, width, bodyHeight)
+	}
+
+	item := p.treeItems[p.cursor]
+	if item.isParent {
+		out = append(out, "", stDim.Render("  选择面板以预览内容"))
+		return padBlock(out, width, bodyHeight)
+	}
+
+	out = append(out, stDim.Render("  "+item.pane.ID))
+	if label := item.label; label != "" {
+		out = append(out, stTitle.Render("  "+truncateWidth(label, width-4)))
+	}
+	out = append(out, "")
+
+	if p.panePreview == "" {
+		out = append(out, stDim.Render("  加载中…"))
+	} else {
+		lines := strings.Split(p.panePreview, "\n")
+		avail := bodyHeight - len(out) - 2
+		if avail < 1 {
+			avail = 1
+		}
+		if len(lines) > avail {
+			lines = lines[:avail]
+		}
+		for _, line := range lines {
+			out = append(out, "  "+truncateWidth(line, width-4))
+		}
+	}
+	return padBlock(out, width, bodyHeight)
+}
+
+// workspaceFilterSplitView renders the workspace filter picker as a tree with checkboxes.
+func (m *Model) workspaceFilterSplitView(width, bodyHeight int) string {
+	leftW := width * 50 / 100
+	if leftW < 35 {
+		leftW = 35
+	}
+	if leftW > width-15 {
+		leftW = width - 15
+	}
+	rightW := width - leftW - 1
+
+	leftPanel := m.workspaceFilterLeftPanel(leftW, bodyHeight)
+	rightPanel := m.workspaceFilterRightPanel(rightW, bodyHeight)
+
+	divider := strings.TrimRight(strings.Repeat("│\n", bodyHeight), "\n")
+	joined := lipgloss.JoinHorizontal(lipgloss.Top, leftPanel, divider, rightPanel)
+	return joined
+}
+
+func (m *Model) workspaceFilterLeftPanel(width, bodyHeight int) string {
+	p := &m.picker
+	out := []string{stTitle.Render(p.title)}
+	avail := max(bodyHeight-4, 3)
+	if len(p.treeItems) == 0 {
+		out = append(out, "", stDim.Render("  没有可用的工作区或面板"))
+		out = append(out, stDim.Render("  esc 返回"))
+		return padBlock(out, width, bodyHeight)
+	}
+	window := listWindow(p.cursor, len(p.treeItems), avail)
+	if window.start > 0 {
+		out = append(out, stDim.Render("  ↑ "+strconv.Itoa(window.start)+" 更多"))
+	}
+	for i := window.start; i < window.end; i++ {
+		item := p.treeItems[i]
+		var prefix, label string
+		if item.isParent {
+			if item.expanded {
+				prefix = "▾ "
+			} else {
+				prefix = "▸ "
+			}
+			label = prefix + truncateWidth(item.label, width-6)
+			if i == p.cursor {
+				out = append(out, stSelected.Render(pad(label, width-1)))
+			} else {
+				out = append(out, stTitle.Render(label)+stDim.Render("  "+item.hint))
+			}
+		} else {
+			// Checkbox for pane selection.
+			checked := "○"
+			if p.selectedPanes != nil && p.selectedPanes[item.key] {
+				checked = "●"
+			}
+			prefix = "  " + checked + " "
+			label = prefix + truncateWidth(item.label, width-8)
+			if i == p.cursor {
+				out = append(out, stSelected.Render(pad(label, width-1)))
+			} else {
+				out = append(out, label+stDim.Render("  "+item.hint))
+			}
+		}
+	}
+	if window.end < len(p.treeItems) {
+		out = append(out, stDim.Render("  ↓ "+strconv.Itoa(len(p.treeItems)-window.end)+" 更多"))
+	}
+	out = append(out, "", stDim.Render("空格选择 · ↑↓ 移动 · ←→ 展开 · 回车确认 · esc 返回"))
+	return padBlock(out, width, bodyHeight)
+}
+
+func (m *Model) workspaceFilterRightPanel(width, bodyHeight int) string {
+	p := &m.picker
+	out := []string{stDim.Render(" 面板预览")}
+	out = append(out, strings.Repeat("─", max(width, 1)))
+
+	if p.cursor >= len(p.treeItems) {
+		out = append(out, "", stDim.Render("  选择面板以预览内容"))
+		return padBlock(out, width, bodyHeight)
+	}
+
+	item := p.treeItems[p.cursor]
+	if item.isParent {
+		out = append(out, "", stDim.Render("  选择面板以预览内容"))
+		return padBlock(out, width, bodyHeight)
+	}
+
+	out = append(out, stDim.Render("  "+item.pane.ID))
+	if label := item.label; label != "" {
+		out = append(out, stTitle.Render("  "+truncateWidth(label, width-4)))
+	}
+	
+	// Show selection status.
+	if p.selectedPanes != nil && p.selectedPanes[item.key] {
+		out = append(out, stOk.Render("  ● 已选择"))
+	} else {
+		out = append(out, stDim.Render("  ○ 未选择"))
+	}
+	out = append(out, "")
+
+	if p.panePreview == "" {
+		out = append(out, stDim.Render("  加载中…"))
+	} else {
+		lines := strings.Split(p.panePreview, "\n")
+		avail := bodyHeight - len(out) - 2
+		if avail < 1 {
+			avail = 1
+		}
+		if len(lines) > avail {
+			lines = lines[:avail]
+		}
+		for _, line := range lines {
+			out = append(out, "  "+truncateWidth(line, width-4))
+		}
+	}
+	return padBlock(out, width, bodyHeight)
+}
+
 func (m *Model) helpView(width int) string {
 	rows := [][2]string{
 		{"n / e / Enter", "新建消息 · 编辑内容"},
 		{"i", "重命名标题（留空显示内容预览）"},
-		{"j k g G tab", "移动 · 跳转 · 切换列表和消息"},
+		{"j k g G", "移动 · 跳转"},
+		{"tab", "循环切换状态筛选"},
+		{"1 2 3", "切换状态筛选（全部/待处理/已发送）"},
 		{"s", "立即发送"},
 		{"t", "选择触发方式（手动、完成后、定时）"},
 		{"p", "从 herdr 实时状态选择目标面板"},
 		{"u", "暂存为草稿（不发送）"},
 		{"f c d", "收藏 · 克隆 · 删除"},
-		{"x", "切换筛选（全部、待处理、已发送）"},
+		{"x", "筛选工作区/面板（多选）"},
 		{"r R", "刷新 herdr 状态 · 执行一次调度"},
 		{"l", "调度日志"},
 		{"ctrl+d ctrl+u", "滚动长消息"},
-		{"q  Q", "退出筛选 / 退出"},
+		{"q", "退出"},
 	}
 	out := make([]string, 0, len(rows)+3)
 	out = append(out, stTitle.Render("快捷键"))

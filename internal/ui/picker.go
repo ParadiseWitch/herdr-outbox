@@ -38,6 +38,12 @@ type picker struct {
 	// panePreview holds the preview content for the currently selected pane.
 	panePreview     string
 	panePreviewPane string // pane ID for which preview was loaded
+
+	// treeItems holds the flattened tree for target selection.
+	treeItems []treeItem
+
+	// selectedPanes holds the multi-select choices for workspace filtering.
+	selectedPanes map[string]bool
 }
 
 func (m *Model) openTargetPicker(ctx context.Context, sel *model.Message) {
@@ -49,8 +55,150 @@ func (m *Model) openTargetPicker(ctx context.Context, sel *model.Message) {
 		return
 	}
 	m.mode = modeTargetPicker
-	m.picker = picker{target: sel.ID, step: 0}
-	m.buildWorkspaceStep()
+	m.picker = picker{target: sel.ID}
+	m.buildTreePicker()
+}
+
+type treeItem struct {
+	key       string
+	label     string
+	hint      string
+	isParent  bool
+	expanded  bool
+	workspace string
+	pane      herdr.Pane
+	target    model.Target
+}
+
+func (m *Model) buildTreePicker() {
+	sel := m.byID(m.picker.target)
+	items := make([]treeItem, 0)
+
+	if m.snapshot == nil {
+		m.picker.treeItems = items
+		m.picker.title = "目标面板"
+		m.picker.cursor = 0
+		return
+	}
+
+	for _, w := range m.snapshot.Workspaces {
+		panes := make([]herdr.Pane, 0)
+		for _, p := range m.snapshot.Panes {
+			if p.WorkspaceID == w.ID {
+				panes = append(panes, p)
+			}
+		}
+
+		// Only expand the workspace that contains the message's current target.
+		isExpanded := false
+		if sel != nil && sel.Target.Workspace == w.ID {
+			isExpanded = true
+		}
+
+		items = append(items, treeItem{
+			key:      w.ID,
+			label:    w.Display(),
+			hint:     pluralPanes(len(panes)),
+			isParent: true,
+			expanded: isExpanded,
+		})
+
+		if isExpanded {
+			for _, p := range panes {
+				items = append(items, treeItem{
+					key:       p.ID,
+					label:     p.Title(),
+					hint:      paneHint(p),
+					isParent:  false,
+					workspace: w.ID,
+					pane:      p,
+					target:    targetOf(p),
+				})
+			}
+		}
+	}
+
+	m.picker.treeItems = items
+	m.picker.title = "目标面板"
+
+	if sel != nil && sel.Target.Pane != "" {
+		for i, item := range items {
+			if item.key == sel.Target.Pane {
+				m.picker.cursor = i
+				return
+			}
+		}
+	}
+	m.picker.cursor = 0
+}
+
+// rebuildTreeItems rebuilds the flat list from the current expand/collapse state.
+func (m *Model) rebuildTreeItems() {
+	// Preserve expand/collapse state from current treeItems.
+	expanded := make(map[string]bool)
+	for _, item := range m.picker.treeItems {
+		if item.isParent {
+			expanded[item.key] = item.expanded
+		}
+	}
+
+	items := make([]treeItem, 0)
+	for _, w := range m.snapshot.Workspaces {
+		panes := make([]herdr.Pane, 0)
+		for _, p := range m.snapshot.Panes {
+			if p.WorkspaceID == w.ID {
+				panes = append(panes, p)
+			}
+		}
+
+		isExpanded := expanded[w.ID]
+
+		items = append(items, treeItem{
+			key:      w.ID,
+			label:    w.Display(),
+			hint:     pluralPanes(len(panes)),
+			isParent: true,
+			expanded: isExpanded,
+		})
+
+		if isExpanded {
+			for _, p := range panes {
+				items = append(items, treeItem{
+					key:       p.ID,
+					label:     p.Title(),
+					hint:      paneHint(p),
+					isParent:  false,
+					workspace: w.ID,
+					pane:      p,
+					target:    targetOf(p),
+				})
+			}
+		}
+	}
+
+	m.picker.treeItems = items
+}
+
+// loadTreePreview loads the preview for the currently selected pane in the tree.
+func (m *Model) loadTreePreview() tea.Cmd {
+	if m.picker.cursor >= len(m.picker.treeItems) {
+		return nil
+	}
+	item := m.picker.treeItems[m.picker.cursor]
+	if item.isParent || item.pane.ID == "" {
+		return nil
+	}
+	paneID := item.pane.ID
+	if m.picker.panePreviewPane == paneID {
+		return nil
+	}
+	return func() tea.Msg {
+		content, err := m.provider.ReadPane(context.Background(), paneID, 20)
+		if err != nil {
+			return panePreviewMsg{paneID: paneID, content: "[error: " + err.Error() + "]"}
+		}
+		return panePreviewMsg{paneID: paneID, content: content}
+	}
 }
 
 func (m *Model) buildWorkspaceStep() {
@@ -78,6 +226,28 @@ func (m *Model) buildWorkspaceStep() {
 	m.picker.itemsAll = items
 	m.picker.cursor = 0
 	m.picker.step = 0
+}
+
+func (m *Model) restorePickerCursor() {
+	sel := m.byID(m.picker.target)
+	if sel == nil {
+		return
+	}
+	if m.picker.step == 0 {
+		for i, item := range m.picker.items {
+			if item.key == sel.Target.Workspace {
+				m.picker.cursor = i
+				return
+			}
+		}
+	} else if m.picker.step == 1 {
+		for i, item := range m.picker.items {
+			if item.key == sel.Target.Pane {
+				m.picker.cursor = i
+				return
+			}
+		}
+	}
 }
 
 func pluralPanes(n int) string {
@@ -109,6 +279,7 @@ func (m *Model) buildPaneStep(wsID string) {
 	m.picker.step = 1
 	m.picker.panePreview = ""
 	m.picker.panePreviewPane = ""
+	m.restorePickerCursor()
 }
 
 // paneLabel builds a descriptive label for the picker, preferring terminal title
@@ -146,22 +317,15 @@ func paneHint(p herdr.Pane) string {
 func (m *Model) onTargetPickerKey(key string) (tea.Model, tea.Cmd) {
 	p := &m.picker
 	switch key {
-	case "esc":
-		if p.step == 1 && len(m.snapshot.Workspaces) > 1 {
-			m.buildWorkspaceStep()
-			return m, nil
-		}
-		m.mode = modeBrowse
-		return m, nil
-	case "q":
+	case "esc", "q":
 		m.mode = modeBrowse
 		return m, nil
 	case "j", "down":
-		if p.cursor < len(p.items)-1 {
+		if p.cursor < len(p.treeItems)-1 {
 			p.cursor++
 			p.panePreview = ""
 			p.panePreviewPane = ""
-			return m, m.loadPanePreview()
+			return m, m.loadTreePreview()
 		}
 		return m, nil
 	case "k", "up":
@@ -169,39 +333,49 @@ func (m *Model) onTargetPickerKey(key string) (tea.Model, tea.Cmd) {
 			p.cursor--
 			p.panePreview = ""
 			p.panePreviewPane = ""
-			return m, m.loadPanePreview()
+			return m, m.loadTreePreview()
 		}
 		return m, nil
-	case "enter", "l", "right":
-		if p.cursor >= len(p.items) {
-			m.setNotice("没有匹配项；退格放宽筛选")
+	case "h", "left", "l", "right":
+		if p.cursor >= len(p.treeItems) {
 			return m, nil
 		}
-		item := p.items[p.cursor]
-		if p.step == 0 {
-			m.buildPaneStep(item.key)
-			p.panePreview = ""
-			p.panePreviewPane = ""
-			return m, m.loadPanePreview()
-		}
-		return m.applyTarget(item.target)
-	}
-	if len(key) == 1 && key[0] >= ' ' && key[0] <= '~' {
-		p.filter += strings.ToLower(key)
-		p.applyFilter()
-		p.panePreview = ""
-		p.panePreviewPane = ""
-		return m, m.loadPanePreview()
-	}
-	if key == "backspace" {
-		if len(p.filter) > 0 {
-			p.filter = p.filter[:len(p.filter)-1]
-			p.applyFilter()
-			p.panePreview = ""
-			p.panePreviewPane = ""
-			return m, m.loadPanePreview()
+		item := p.treeItems[p.cursor]
+		if item.isParent {
+			// Toggle expand/collapse for this workspace.
+			item.expanded = !item.expanded
+			p.treeItems[p.cursor] = item
+			m.rebuildTreeItems()
+			// Keep cursor on the same workspace.
+			for i, it := range p.treeItems {
+				if it.key == item.key {
+					p.cursor = i
+					break
+				}
+			}
+			return m, nil
 		}
 		return m, nil
+	case "enter":
+		if p.cursor >= len(p.treeItems) {
+			return m, nil
+		}
+		item := p.treeItems[p.cursor]
+		if item.isParent {
+			// Toggle expand/collapse for this workspace.
+			item.expanded = !item.expanded
+			p.treeItems[p.cursor] = item
+			m.rebuildTreeItems()
+			for i, it := range p.treeItems {
+				if it.key == item.key {
+					p.cursor = i
+					break
+				}
+			}
+			return m, nil
+		}
+		// Leaf node: select this target.
+		return m.applyTarget(item.target)
 	}
 	return m, nil
 }
@@ -269,4 +443,167 @@ func (m *Model) applyTarget(t model.Target) (tea.Model, tea.Cmd) {
 	}
 	m.setNotice("目标已设为 " + t.Display())
 	return m, tea.Batch(m.loadMsg(), m.snapshotCmd())
+}
+
+// openWorkspaceFilter opens a tree-based multi-select picker for workspace/pane filtering.
+func (m *Model) openWorkspaceFilter() {
+	if m.snapshot == nil || len(m.snapshot.Panes) == 0 {
+		m.setNotice("herdr 状态不可用;按 r 刷新")
+		return
+	}
+	m.mode = modeWorkspaceFilter
+	m.picker = picker{}
+	m.buildWorkspaceFilterTree()
+}
+
+func (m *Model) buildWorkspaceFilterTree() {
+	items := make([]treeItem, 0)
+
+	for _, w := range m.snapshot.Workspaces {
+		panes := make([]herdr.Pane, 0)
+		for _, p := range m.snapshot.Panes {
+			if p.WorkspaceID == w.ID {
+				panes = append(panes, p)
+			}
+		}
+
+		items = append(items, treeItem{
+			key:      w.ID,
+			label:    w.Display(),
+			hint:     pluralPanes(len(panes)),
+			isParent: true,
+			expanded: true,
+		})
+
+		for _, p := range panes {
+			items = append(items, treeItem{
+				key:       p.ID,
+				label:     p.Title(),
+				hint:      paneHint(p),
+				isParent:  false,
+				workspace: w.ID,
+				pane:      p,
+			})
+		}
+	}
+
+	m.picker.treeItems = items
+	m.picker.title = "筛选面板(空格选择,回车确认)"
+	m.picker.cursor = 0
+}
+
+func (m *Model) onWorkspaceFilterKey(key string) (tea.Model, tea.Cmd) {
+	p := &m.picker
+	switch key {
+	case "esc", "q":
+		m.mode = modeBrowse
+		return m, nil
+	case "j", "down":
+		if p.cursor < len(p.treeItems)-1 {
+			p.cursor++
+			p.panePreview = ""
+			p.panePreviewPane = ""
+			return m, m.loadTreePreview()
+		}
+		return m, nil
+	case "k", "up":
+		if p.cursor > 0 {
+			p.cursor--
+			p.panePreview = ""
+			p.panePreviewPane = ""
+			return m, m.loadTreePreview()
+		}
+		return m, nil
+	case "h", "left", "l", "right":
+		if p.cursor >= len(p.treeItems) {
+			return m, nil
+		}
+		item := p.treeItems[p.cursor]
+		if item.isParent {
+			item.expanded = !item.expanded
+			p.treeItems[p.cursor] = item
+			m.rebuildWorkspaceFilterTree()
+			for i, it := range p.treeItems {
+				if it.key == item.key {
+					p.cursor = i
+					break
+				}
+			}
+		}
+		return m, nil
+	case " ":
+		if p.cursor >= len(p.treeItems) {
+			return m, nil
+		}
+		item := p.treeItems[p.cursor]
+		if !item.isParent {
+			// Toggle selection for this pane.
+			if m.picker.selectedPanes == nil {
+				m.picker.selectedPanes = make(map[string]bool)
+			}
+			if m.picker.selectedPanes[item.key] {
+				delete(m.picker.selectedPanes, item.key)
+			} else {
+				m.picker.selectedPanes[item.key] = true
+			}
+		}
+		return m, nil
+	case "enter":
+		// Apply the filter.
+		if len(m.picker.selectedPanes) > 0 {
+			m.filter.Panes = m.picker.selectedPanes
+		} else {
+			m.filter.Panes = nil
+		}
+		m.picker = picker{}
+		m.mode = modeBrowse
+		m.restoreCursor()
+		m.setNotice("筛选: " + m.filter.Label())
+		return m, nil
+	}
+	return m, nil
+}
+
+func (m *Model) rebuildWorkspaceFilterTree() {
+	expanded := make(map[string]bool)
+	for _, item := range m.picker.treeItems {
+		if item.isParent {
+			expanded[item.key] = item.expanded
+		}
+	}
+
+	items := make([]treeItem, 0)
+	for _, w := range m.snapshot.Workspaces {
+		panes := make([]herdr.Pane, 0)
+		for _, p := range m.snapshot.Panes {
+			if p.WorkspaceID == w.ID {
+				panes = append(panes, p)
+			}
+		}
+
+		isExpanded := expanded[w.ID]
+
+		items = append(items, treeItem{
+			key:      w.ID,
+			label:    w.Display(),
+			hint:     pluralPanes(len(panes)),
+			isParent: true,
+			expanded: isExpanded,
+		})
+
+		if isExpanded {
+			for _, p := range panes {
+				items = append(items, treeItem{
+					key:       p.ID,
+					label:     p.Title(),
+					hint:      paneHint(p),
+					isParent:  false,
+					workspace: w.ID,
+					pane:      p,
+				})
+			}
+		}
+	}
+
+	m.picker.treeItems = items
 }
