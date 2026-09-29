@@ -2,6 +2,8 @@ package ui
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -16,6 +18,9 @@ import (
 
 func newTestModel(t *testing.T, width, height int) (*Model, *store.Store, *herdr.Fake) {
 	t.Helper()
+	// Tests run in whatever pane launched them, so a real HERDR_PANE_ID would
+	// flip the default 当前 tab on and empty every list. Pin it off.
+	t.Setenv("HERDR_PANE_ID", "")
 	dir := t.TempDir()
 	st, err := store.Open(dir)
 	if err != nil {
@@ -50,6 +55,67 @@ func (m *Model) reload(t *testing.T) {
 	m.msgs = msgs
 	if len(msgs) > 0 {
 		m.selectedID = msgs[m.cursor].ID
+	}
+}
+
+func TestCurrentTabShowsOnlyThisPane(t *testing.T) {
+	m, st, _ := newTestModel(t, 100, 30)
+	m.currentPane = "w1:p1"
+	for _, tc := range []struct {
+		pane string
+		want bool
+	}{
+		{"w1:p1", true},
+		{"w2:p9", false},
+		{"", false},
+	} {
+		if _, err := st.Create(&model.Message{
+			Content: "x", Target: model.Target{Pane: tc.pane},
+			Trigger: model.Trigger{Kind: model.TriggerManual}, Status: model.StatusPending,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	m.reload(t)
+	m.filter.Status = filterCurrent
+	m.restoreCursor()
+	if got := len(m.visible()); got != 1 {
+		t.Fatalf("当前 tab shows %d messages, want 1", got)
+	}
+}
+
+func TestLastTabSurvivesARestart(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), "state.json")
+	m, _, _ := newTestModel(t, 100, 30)
+	m.statePath = statePath
+	m.filter.Status = filterSent
+	m.persistTab()
+
+	again, _, _ := newTestModel(t, 100, 30)
+	again.statePath = statePath
+	again.filter.Status = again.loadLastTab()
+	if again.filter.Status != filterSent {
+		t.Fatalf("restored tab = %v, want sent", again.filter.Status)
+	}
+}
+
+// Closing on 当前 used to reopen on 全部: a missing HERDR_PANE_ID silently
+// rewrote the saved tab. A saved tab must always win.
+func TestSavedCurrentTabSurvivesOutsideHerdr(t *testing.T) {
+	t.Setenv("HERDR_PANE_ID", "")
+	statePath := filepath.Join(t.TempDir(), "state.json")
+	if err := os.WriteFile(statePath, []byte(`{"lastTab":"current"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	m, _, _ := newTestModel(t, 100, 30)
+	m.statePath = statePath
+	m.currentPane = ""
+	if got := m.loadLastTab(); got != filterCurrent {
+		t.Fatalf("restored tab = %v, want current", got)
+	}
+	// First launch without a saved state still falls back to 全部.
+	if got := m.defaultTab(); got != filterAll {
+		t.Fatalf("default tab outside herdr = %v, want all", got)
 	}
 }
 

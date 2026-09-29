@@ -3,6 +3,7 @@ package ui
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
@@ -32,6 +33,7 @@ const (
 	modeRename
 	modeEdit
 	modeWorkspaceFilter
+	modeSearch
 )
 
 type focusArea int
@@ -45,14 +47,17 @@ type filterMode int
 
 const (
 	filterAll filterMode = iota
-	filterOpen
+	filterCurrent
+	filterUnsent
 	filterSent
 )
 
 func (f filterMode) Label() string {
 	switch f {
-	case filterOpen:
-		return "待处理"
+	case filterCurrent:
+		return "当前"
+	case filterUnsent:
+		return "未发送"
 	case filterSent:
 		return "已发送"
 	default:
@@ -60,13 +65,40 @@ func (f filterMode) Label() string {
 	}
 }
 
+func (f filterMode) Name() string {
+	switch f {
+	case filterCurrent:
+		return "current"
+	case filterUnsent:
+		return "unsent"
+	case filterSent:
+		return "sent"
+	default:
+		return "all"
+	}
+}
+
+func filterFromName(s string) filterMode {
+	switch s {
+	case "current":
+		return filterCurrent
+	case "unsent":
+		return filterUnsent
+	case "sent":
+		return filterSent
+	default:
+		return filterAll
+	}
+}
+
 type messageFilter struct {
 	Status filterMode
 	Panes  map[string]bool // pane ID -> selected
+	Query  string          // search query
 }
 
 func (f messageFilter) Active() bool {
-	return f.Status != filterAll || len(f.Panes) > 0
+	return f.Status != filterAll || len(f.Panes) > 0 || f.Query != ""
 }
 
 func (f messageFilter) Label() string {
@@ -74,6 +106,9 @@ func (f messageFilter) Label() string {
 	if len(f.Panes) > 0 {
 		paneCount := len(f.Panes)
 		parts = append(parts, fmt.Sprintf("%d 个面板", paneCount))
+	}
+	if f.Query != "" {
+		parts = append(parts, "搜索:"+f.Query)
 	}
 	return strings.Join(parts, " · ")
 }
@@ -121,6 +156,8 @@ type Options struct {
 	NoTimer  bool
 	// Editor selects the in-TUI text area or an external $EDITOR. Empty means builtin.
 	Editor config.EditorMode
+	// StatePath persists UI session state (last active tab) across runs. Empty disables persistence.
+	StatePath string
 }
 
 type Model struct {
@@ -150,8 +187,15 @@ type Model struct {
 	deleteHold *model.Message
 	detailTop  int
 
+	// currentPane is the herdr pane running this TUI; the 当前 tab shows
+	// messages targeted at it. Empty when not launched inside herdr.
+	currentPane string
+	statePath   string
+
 	renameInput string
 	renameID    string
+
+	searchInput string
 
 	editorMode config.EditorMode
 	textarea   textarea.Model
@@ -172,12 +216,15 @@ func New(opts Options) *Model {
 		prov = &LocalProvider{Store: opts.Store, Engine: opts.Engine}
 	}
 	m := &Model{
-		provider:   prov,
-		poll:       opts.Poll,
-		NoTimer:    opts.NoTimer,
-		editorMode: config.Config{Editor: opts.Editor}.ResolveEditor(),
-		textarea:   newTextarea(),
+		provider:    prov,
+		poll:        opts.Poll,
+		NoTimer:     opts.NoTimer,
+		editorMode:  config.Config{Editor: opts.Editor}.ResolveEditor(),
+		textarea:    newTextarea(),
+		currentPane: strings.TrimSpace(os.Getenv("HERDR_PANE_ID")),
+		statePath:   opts.StatePath,
 	}
+	m.filter.Status = m.loadLastTab()
 	if s, ok := prov.(dataprovider.Scheduler); ok {
 		m.sched = s
 	}
@@ -185,6 +232,48 @@ func New(opts Options) *Model {
 		m.poll = time.Second
 	}
 	return m
+}
+
+// uiState is the persisted session state: which tab was active at exit.
+type uiState struct {
+	LastTab string `json:"lastTab"`
+}
+
+func (m *Model) loadLastTab() filterMode {
+	if m.statePath == "" {
+		return m.defaultTab()
+	}
+	data, err := os.ReadFile(m.statePath)
+	if err != nil {
+		return m.defaultTab()
+	}
+	var st uiState
+	if json.Unmarshal(data, &st) != nil {
+		return m.defaultTab()
+	}
+	// A saved tab is restored as-is: silently rewriting 当前 to 全部 made the
+	// tab impossible to keep across restarts.
+	return filterFromName(st.LastTab)
+}
+
+// defaultTab is what a first launch shows: 当前 inside herdr, 全部 elsewhere —
+// an empty list on first sight would look broken.
+func (m *Model) defaultTab() filterMode {
+	if m.currentPane == "" {
+		return filterAll
+	}
+	return filterCurrent
+}
+
+func (m *Model) persistTab() {
+	if m.statePath == "" {
+		return
+	}
+	data, err := json.Marshal(uiState{LastTab: m.filter.Status.Name()})
+	if err != nil {
+		return
+	}
+	_ = os.WriteFile(m.statePath, data, 0o644)
 }
 
 func (m *Model) Init() tea.Cmd {
@@ -435,7 +524,11 @@ func (m *Model) visible() []*model.Message {
 	out := make([]*model.Message, 0, len(m.msgs))
 	for _, msg := range m.msgs {
 		switch m.filter.Status {
-		case filterOpen:
+		case filterCurrent:
+			if m.currentPane == "" || !strings.EqualFold(msg.Target.Pane, m.currentPane) {
+				continue
+			}
+		case filterUnsent:
 			if msg.Status == model.StatusSent {
 				continue
 			}
@@ -446,6 +539,13 @@ func (m *Model) visible() []*model.Message {
 		}
 		if len(m.filter.Panes) > 0 && !m.filter.Panes[msg.Target.Pane] {
 			continue
+		}
+		if m.filter.Query != "" {
+			q := strings.ToLower(m.filter.Query)
+			haystack := strings.ToLower(msg.Title + " " + msg.Content + " " + msg.Target.Display())
+			if !strings.Contains(haystack, q) {
+				continue
+			}
 		}
 		out = append(out, msg)
 	}

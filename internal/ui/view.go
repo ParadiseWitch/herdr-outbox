@@ -61,7 +61,7 @@ func (m *Model) View() string {
 	if body == "" {
 		// The divider has to be a full-height column: a single-line "│" block gets
 		// padded with blanks and the two panels appear unjoined below the header.
-		divider := strings.TrimRight(strings.Repeat("│\n", bodyHeight), "\n")
+		divider := stDim.Render(strings.TrimRight(strings.Repeat("│\n", bodyHeight), "\n"))
 		body = lipgloss.JoinHorizontal(lipgloss.Top, m.listView(leftW, bodyHeight), divider, m.detailPanel(rightW, bodyHeight))
 	}
 	return lipgloss.JoinVertical(lipgloss.Left, header, body, notice, status)
@@ -90,6 +90,15 @@ func (m *Model) detailHeight() int {
 }
 
 func (m *Model) headerView(width int) string {
+	if m.mode == modeSearch {
+		parts := []string{stTitle.Render("搜索"), stDim.Render("│"), stTitle.Render("/ " + m.searchInput + "▏")}
+		if m.filter.Query != "" {
+			vis := len(m.visible())
+			parts = append(parts, stDim.Render(fmt.Sprintf("(%d 条匹配)", vis)))
+		}
+		parts = append(parts, stDim.Render("│"), stDim.Render("enter 确认 · esc 清除"))
+		return fit(joinParts(parts), width)
+	}
 	var counts struct{ open, sent, armed int }
 	for _, msg := range m.msgs {
 		switch {
@@ -143,8 +152,9 @@ func (m *Model) listView(width, height int) string {
 		mode  filterMode
 	}{
 		{"1", "全部", filterAll},
-		{"2", "待处理", filterOpen},
-		{"3", "已发送", filterSent},
+		{"2", "当前", filterCurrent},
+		{"3", "未发送", filterUnsent},
+		{"4", "已发送", filterSent},
 	}
 	tabLine := []string{}
 	for i, tab := range tabs {
@@ -160,12 +170,16 @@ func (m *Model) listView(width, height int) string {
 	}
 	
 	head := stDim.Render(" 发件箱")
-	lines := []string{head, strings.Join(tabLine, ""), strings.Repeat("─", max(width, 1))}
+	lines := []string{head, strings.Join(tabLine, ""), stDim.Render(strings.Repeat("─", max(width, 1)))}
 	list := m.visible()
 	if len(list) == 0 {
 		empty := "  还没有消息"
 		hint := "  n  新建消息"
-		if m.snapErr != nil {
+		switch {
+		case m.filter.Status == filterCurrent && m.currentPane == "":
+			empty = "  未在 herdr 面板内运行"
+			hint = "  无法确定当前面板"
+		case m.snapErr != nil:
 			hint = "  r  重试 herdr"
 		}
 		lines = append(lines, "", stDim.Render(empty), stDim.Render(hint))
@@ -214,8 +228,8 @@ func (m *Model) listRows(msg *model.Message, width int, selected bool) []string 
 	if title == "" {
 		title = "(新消息)"
 	}
-	title = truncateWidth(title, width-6)
-	row := glyph + fav + " " + title
+	title = truncateWidth(title, width-7)
+	row := " " + glyph + fav + " " + title
 	if selected {
 		row = stSelected.Render(pad(row, width-1))
 	} else {
@@ -223,7 +237,7 @@ func (m *Model) listRows(msg *model.Message, width int, selected bool) []string 
 	}
 	// Both rows of an entry must come out exactly as wide as each other, or the
 	// divider between the panels lands a column off on one of them.
-	meta := pad("  "+truncateWidth(m.metaFor(msg), width-3), width-1)
+	meta := pad("   "+truncateWidth(m.metaFor(msg), width-4), width-1)
 	return []string{row, stDim.Render(meta)}
 }
 
@@ -289,14 +303,14 @@ func statusGlyph(s model.Status) string {
 func styleByStatus(s model.Status) lipgloss.Style {
 	switch s {
 	case model.StatusSent:
-		return stOk
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("243"))
 	case model.StatusFailed:
 		return stAlert
 	case model.StatusSending:
 		return lipgloss.NewStyle().Foreground(colWorking)
 	case model.StatusWaiting, model.StatusScheduled:
 		return lipgloss.NewStyle().Foreground(colAccent)
-	case model.StatusPending:
+	case model.StatusPending, model.StatusDraft:
 		return lipgloss.NewStyle().Foreground(lipgloss.Color("250"))
 	default:
 		return stDim
@@ -304,7 +318,7 @@ func styleByStatus(s model.Status) lipgloss.Style {
 }
 
 func (m *Model) detailPanel(width, height int) string {
-	lines := []string{stDim.Render(" 消息"), "", strings.Repeat("─", max(width, 1))}
+	lines := []string{stDim.Render(" 消息"), "", stDim.Render(strings.Repeat("─", max(width, 1)))}
 	sel := m.selected()
 	if sel == nil {
 		lines = append(lines, "", stDim.Render("  选择一条消息，或按 n 新建"))
@@ -489,7 +503,7 @@ func (m *Model) pickerSplitView(width, bodyHeight int) string {
 	leftPanel := m.pickerLeftPanel(leftW, bodyHeight)
 	rightPanel := m.pickerRightPanel(rightW, bodyHeight)
 
-	divider := strings.TrimRight(strings.Repeat("│\n", bodyHeight), "\n")
+	divider := stDim.Render(strings.TrimRight(strings.Repeat("│\n", bodyHeight), "\n"))
 	joined := lipgloss.JoinHorizontal(lipgloss.Top, leftPanel, divider, rightPanel)
 	return joined
 }
@@ -529,7 +543,7 @@ func (m *Model) pickerLeftPanel(width, bodyHeight int) string {
 func (m *Model) pickerRightPanel(width, bodyHeight int) string {
 	p := &m.picker
 	out := []string{stDim.Render(" 面板预览")}
-	out = append(out, strings.Repeat("─", max(width, 1)))
+	out = append(out, stDim.Render(strings.Repeat("─", max(width, 1))))
 
 	if p.cursor >= len(p.items) {
 		out = append(out, "", stDim.Render("  选择面板以预览内容"))
@@ -575,7 +589,7 @@ func (m *Model) treePickerSplitView(width, bodyHeight int) string {
 	leftPanel := m.treePickerLeftPanel(leftW, bodyHeight)
 	rightPanel := m.treePickerRightPanel(rightW, bodyHeight)
 
-	divider := strings.TrimRight(strings.Repeat("│\n", bodyHeight), "\n")
+	divider := stDim.Render(strings.TrimRight(strings.Repeat("│\n", bodyHeight), "\n"))
 	joined := lipgloss.JoinHorizontal(lipgloss.Top, leftPanel, divider, rightPanel)
 	return joined
 }
@@ -628,7 +642,7 @@ func (m *Model) treePickerLeftPanel(width, bodyHeight int) string {
 func (m *Model) treePickerRightPanel(width, bodyHeight int) string {
 	p := &m.picker
 	out := []string{stDim.Render(" 面板预览")}
-	out = append(out, strings.Repeat("─", max(width, 1)))
+	out = append(out, stDim.Render(strings.Repeat("─", max(width, 1))))
 
 	if p.cursor >= len(p.treeItems) {
 		out = append(out, "", stDim.Render("  选择面板以预览内容"))
@@ -679,7 +693,7 @@ func (m *Model) workspaceFilterSplitView(width, bodyHeight int) string {
 	leftPanel := m.workspaceFilterLeftPanel(leftW, bodyHeight)
 	rightPanel := m.workspaceFilterRightPanel(rightW, bodyHeight)
 
-	divider := strings.TrimRight(strings.Repeat("│\n", bodyHeight), "\n")
+	divider := stDim.Render(strings.TrimRight(strings.Repeat("│\n", bodyHeight), "\n"))
 	joined := lipgloss.JoinHorizontal(lipgloss.Top, leftPanel, divider, rightPanel)
 	return joined
 }
@@ -737,7 +751,7 @@ func (m *Model) workspaceFilterLeftPanel(width, bodyHeight int) string {
 func (m *Model) workspaceFilterRightPanel(width, bodyHeight int) string {
 	p := &m.picker
 	out := []string{stDim.Render(" 面板预览")}
-	out = append(out, strings.Repeat("─", max(width, 1)))
+	out = append(out, stDim.Render(strings.Repeat("─", max(width, 1))))
 
 	if p.cursor >= len(p.treeItems) {
 		out = append(out, "", stDim.Render("  选择面板以预览内容"))
@@ -786,16 +800,17 @@ func (m *Model) helpView(width int) string {
 		{"n / e / Enter", "新建消息 · 编辑内容"},
 		{"i", "重命名标题（留空显示内容预览）"},
 		{"j k g G", "移动 · 跳转"},
-		{"tab", "循环切换状态筛选"},
-		{"1 2 3", "切换状态筛选（全部/待处理/已发送）"},
+		{"tab h l ←→", "切换标签页"},
+		{"1-4", "全部/当前/未发送/已发送"},
 		{"s", "立即发送"},
 		{"t", "选择触发方式（手动、完成后、定时）"},
 		{"p", "从 herdr 实时状态选择目标面板"},
 		{"u", "暂存为草稿（不发送）"},
 		{"f c d", "收藏 · 克隆 · 删除"},
 		{"x", "筛选工作区/面板（多选）"},
+		{"/", "搜索消息（标题、内容、目标）"},
 		{"r R", "刷新 herdr 状态 · 执行一次调度"},
-		{"l", "调度日志"},
+		{"L", "调度日志"},
 		{"ctrl+d ctrl+u", "滚动长消息"},
 		{"q", "退出"},
 	}

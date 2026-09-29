@@ -330,7 +330,7 @@ func runTUIViaClient(dir string, opts globalOptions) error {
 	if err != nil {
 		return err
 	}
-	m := ui.New(ui.Options{Provider: c, Poll: opts.Interval, Editor: cfg.ResolveEditor()})
+	m := ui.New(ui.Options{Provider: c, Poll: opts.Interval, Editor: cfg.ResolveEditor(), StatePath: filepath.Join(dir, "state.json")})
 	p := tea.NewProgram(m, tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {
 		return err

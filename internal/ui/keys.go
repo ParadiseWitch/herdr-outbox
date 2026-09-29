@@ -42,6 +42,8 @@ func (m *Model) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.onRenameKey(msg)
 	case modeWorkspaceFilter:
 		return m.onWorkspaceFilterKey(key)
+	case modeSearch:
+		return m.onSearchKey(msg)
 	}
 
 	ctx := context.Background()
@@ -81,13 +83,11 @@ func (m *Model) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.restoreCursor()
 		return m, nil
 
-	case "tab":
-		m.filter.Status = filterMode((int(m.filter.Status) + 1) % 3)
-		m.restoreCursor()
+	case "tab", "l", "right":
+		m.cycleTab(1)
 		return m, nil
-	case "shift+tab":
-		m.filter.Status = filterMode((int(m.filter.Status) + 2) % 3)
-		m.restoreCursor()
+	case "shift+tab", "h", "left":
+		m.cycleTab(-1)
 		return m, nil
 	case "ctrl+d":
 		return m.scrollDetail(10)
@@ -100,15 +100,28 @@ func (m *Model) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case "1":
 		m.filter.Status = filterAll
+		m.persistTab()
 		m.restoreCursor()
 		return m, nil
 	case "2":
-		m.filter.Status = filterOpen
+		m.filter.Status = filterCurrent
+		m.persistTab()
 		m.restoreCursor()
 		return m, nil
 	case "3":
-		m.filter.Status = filterSent
+		m.filter.Status = filterUnsent
+		m.persistTab()
 		m.restoreCursor()
+		return m, nil
+	case "4":
+		m.filter.Status = filterSent
+		m.persistTab()
+		m.restoreCursor()
+		return m, nil
+
+	case "/":
+		m.mode = modeSearch
+		m.searchInput = m.filter.Query
 		return m, nil
 
 	case "x":
@@ -125,7 +138,7 @@ func (m *Model) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "?":
 		m.mode = modeHelp
 		return m, nil
-	case "l":
+	case "L":
 		m.mode = modeLog
 		return m, nil
 
@@ -183,6 +196,18 @@ func (m *Model) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	return m, nil
+}
+
+// cycleTab moves across the 4 status tabs, wrapping in both directions, and
+// remembers the choice for the next launch.
+func (m *Model) cycleTab(delta int) {
+	n := (int(m.filter.Status) + delta) % 4
+	if n < 0 {
+		n += 4
+	}
+	m.filter.Status = filterMode(n)
+	m.persistTab()
+	m.restoreCursor()
 }
 
 func (m *Model) stepCmdGuarded() tea.Cmd {
@@ -502,6 +527,34 @@ func (m *Model) onRenameKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// never leak into the title the way a String() comparison would allow.
 	if len(msg.Runes) > 0 {
 		m.renameInput += string(msg.Runes)
+	}
+	return m, nil
+}
+
+func (m *Model) onSearchKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.mode = modeBrowse
+		m.filter.Query = ""
+		m.searchInput = ""
+		m.restoreCursor()
+		return m, nil
+	case "enter":
+		m.mode = modeBrowse
+		return m, nil
+	case "backspace":
+		if len(m.searchInput) > 0 {
+			runes := []rune(m.searchInput)
+			m.searchInput = string(runes[:len(runes)-1])
+		}
+		m.filter.Query = m.searchInput
+		m.restoreCursor()
+		return m, nil
+	}
+	if len(msg.Runes) > 0 {
+		m.searchInput += string(msg.Runes)
+		m.filter.Query = m.searchInput
+		m.restoreCursor()
 	}
 	return m, nil
 }
