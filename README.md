@@ -52,7 +52,9 @@ irm https://raw.githubusercontent.com/ParadiseWitch/herdr-outbox/main/install.ps
 herdr-outbox          # 打开 TUI；服务没起会自动拉起
 ```
 
-常用路径：`n` 新建 → `p` 选面板 → `s` 发送；`t` 改触发方式，`e` 编辑内容。编辑方式默认在 TUI 内，想用 `$EDITOR` 就 `herdr-outbox config editor external`。
+新建的消息默认发给**你当时所在的pane**：pane里直接打开时就是本pane；用 popup 打开时，herdr 会抹掉 popup 的 pane 身份，此时按 herdr 实时焦点面板来定——就是弹出前激活的那个。要改就按 `p`。
+
+常用路径：`n` 新建 → `s` 发送；`t` 改触发方式，`e` 编辑内容。编辑方式默认在 TUI 内，想用 `$EDITOR` 就 `herdr-outbox config editor external`。
 
 服务单独管：
 

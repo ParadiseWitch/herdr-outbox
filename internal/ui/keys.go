@@ -257,6 +257,7 @@ func (m *Model) onConfirmKey(key string) (tea.Model, tea.Cmd) {
 
 func (m *Model) newMessage(ctx context.Context) (tea.Model, tea.Cmd) {
 	msg := &model.Message{
+		Target:  m.defaultTarget(),
 		Trigger: model.Trigger{Kind: model.TriggerManual, SettleSeconds: 3},
 		Status:  model.StatusDraft,
 	}
@@ -266,7 +267,11 @@ func (m *Model) newMessage(ctx context.Context) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	m.selectedID = created.ID
-	m.setNotice("编辑中 " + created.ID)
+	note := "编辑中 " + created.ID
+	if !created.Target.Empty() {
+		note += " · 目标 " + m.targetDisplay(created) + "（按 p 可改）"
+	}
+	m.setNotice(note)
 	return m, tea.Batch(m.loadMsg(), m.editCmd(created.ID))
 }
 

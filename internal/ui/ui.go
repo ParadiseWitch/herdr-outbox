@@ -626,6 +626,25 @@ func (m *Model) paneForTarget(t model.Target) (herdr.Pane, bool) {
 	return m.snapshot.Resolve(t)
 }
 
+// defaultTarget is the pane a new message goes to when the user has not chosen
+// one: the pane they were working in. Inside a pane that is this TUI's own pane;
+// in a popup it is the snapshot's focused pane, because herdr clears
+// HERDR_PANE_ID for popup commands and a popup is not a pane of the layout, so
+// the focused pane still names whatever was active before the popup opened.
+func (m *Model) defaultTarget() model.Target {
+	if pane, ok := m.snapshot.Pane(m.currentPane); ok {
+		return pane.Target()
+	}
+	// Either a popup, whose own pane is not in the layout, or a pane herdr no
+	// longer reports: the focused pane is the next best answer for "where was I".
+	if pane, ok := m.snapshot.Focused(); ok {
+		return pane.Target()
+	}
+	// No snapshot at all: keep the id this TUI was launched with, which resolves
+	// once herdr comes back, rather than leaving the message untargeted.
+	return model.Target{Pane: m.currentPane}
+}
+
 func (m *Model) armIfNeeded(ctx context.Context, msg *model.Message) error {
 	if msg.Trigger.Kind == model.TriggerManual {
 		if msg.Status == model.StatusDraft {

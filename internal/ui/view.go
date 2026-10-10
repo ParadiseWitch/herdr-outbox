@@ -697,7 +697,7 @@ func (m *Model) treePreviewPanel(width, bodyHeight int, showSelection bool) stri
 
 func (m *Model) helpView(width int) string {
 	rows := [][2]string{
-		{"n / e / Enter", "新建消息 · 编辑内容"},
+		{"n / e / Enter", "新建消息（默认发给当前面板）· 编辑内容"},
 		{"i", "重命名标题（留空显示内容预览）"},
 		{"j k g G", "移动 · 跳转"},
 		{"tab h l ←→", "切换标签页"},

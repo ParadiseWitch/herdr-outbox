@@ -363,6 +363,22 @@ func (s *Snapshot) Workspace(id string) (Workspace, bool) {
 	return Workspace{}, false
 }
 
+// Focused returns the pane herdr reports as focused. Exactly one pane carries
+// this flag, and a popup is not a pane in this list: opening one leaves the
+// focused pane of the underlying layout untouched, so this is the pane the user
+// was in before the popup took the keyboard.
+func (s *Snapshot) Focused() (Pane, bool) {
+	if s == nil {
+		return Pane{}, false
+	}
+	for _, p := range s.Panes {
+		if p.Focused {
+			return p, true
+		}
+	}
+	return Pane{}, false
+}
+
 // Tab finds a tab by id so the tree can label the middle level.
 func (s *Snapshot) Tab(id string) (Tab, bool) {
 	if s == nil || id == "" {
