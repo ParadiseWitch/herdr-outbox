@@ -241,20 +241,71 @@ func (m *Model) listRows(msg *model.Message, width int, selected bool) []string 
 	return []string{row, stDim.Render(meta)}
 }
 
+// paneDisplayName names a live pane the way the picker tree does: the herdr pane
+// title (terminal title, else the pane label), then the synthetic agent ordinal
+// for a pane with no title, then the bare id.
+func paneDisplayName(p herdr.Pane) string {
+	if t := p.Title(); t != p.ID {
+		return t
+	}
+	if n := p.Name(); n != p.ID {
+		return n
+	}
+	return p.ID
+}
+
+// targetDisplay is where a message goes, named from live herdr state whenever the
+// pane can still be resolved, so a renamed or retitled pane reads the same in the
+// list, the detail panel, and the picker. A message aimed at a pane that is gone
+// keeps the label stored on it.
+func (m *Model) targetDisplay(msg *model.Message) string {
+	if msg == nil {
+		return "无目标"
+	}
+	return m.targetLabel(msg.Target)
+}
+
+// targetLabel is targetDisplay for a bare target, so the notice after a pick
+// names the pane the same way the list does.
+func (m *Model) targetLabel(t model.Target) string {
+	ws := strings.TrimSpace(t.WorkspaceLabel)
+	name := strings.TrimSpace(t.PaneLabel)
+	if pane, ok := m.paneForTarget(t); ok {
+		if strings.TrimSpace(pane.WsLabel) != "" {
+			ws = pane.WsLabel
+		}
+		name = paneDisplayName(pane)
+	}
+	if name == "" {
+		name = strings.TrimSpace(t.Pane)
+	}
+	switch {
+	case ws != "" && name != "":
+		return ws + " / " + name
+	case name != "":
+		return name
+	case ws != "":
+		return ws
+	default:
+		return "无目标"
+	}
+}
+
 // metaFor is the quiet second line under each entry: where it goes and when.
 func (m *Model) metaFor(msg *model.Message) string {
+	target := m.targetDisplay(msg)
 	switch msg.Status {
 	case model.StatusSent:
 		when := ""
 		if msg.SentAt != nil {
 			when = " " + msg.SentAt.Format("15:04")
 		}
-		return "已发送" + when + " → " + msg.Target.Display()
+		return "已发送" + when + " → " + target
 	case model.StatusScheduled:
 		if msg.Trigger.SendAt != nil {
-			return msg.Trigger.SendAt.Format("01-02 15:04") + " → " + msg.Target.Display()
+			return msg.Trigger.SendAt.Format("01-02 15:04") + " → " + target
 		}
-		return "定时 → " + msg.Target.Display()
+		return "定时 → " + target
 	case model.StatusWaiting:
 		// A waiting message can be blocked on something that will never happen, so
 		// whatever the scheduler recorded is more useful than the bare status.
@@ -266,18 +317,18 @@ func (m *Model) metaFor(msg *model.Message) string {
 			return "等待中: 目标已消失"
 		}
 		if pane.AgentStatus == herdr.StatusWorking {
-			return "代理工作中，完成后发送 → " + pane.Display()
+			return "代理工作中，完成后发送 → " + target
 		}
-		return "等待代理开始工作（" + herdr.StatusLabel(pane.AgentStatus) + "）→ " + pane.Display()
+		return "等待代理开始工作（" + herdr.StatusLabel(pane.AgentStatus) + "）→ " + target
 	case model.StatusFailed:
 		return "失败: " + truncate(msg.LastError, 24)
 	case model.StatusDraft:
 		if msg.Target.Pane == "" {
 			return "草稿 · 无目标"
 		}
-		return "草稿 → " + msg.Target.Display()
+		return "草稿 → " + target
 	default:
-		return string(msg.Status) + " → " + msg.Target.Display()
+		return string(msg.Status) + " → " + target
 	}
 }
 
@@ -324,6 +375,9 @@ func (m *Model) detailPanel(width, height int) string {
 		lines = append(lines, "", stDim.Render("  选择一条消息，或按 n 新建"))
 		return padBlock(lines, width, height)
 	}
+	// The destination is what a message is decided by, so it leads the panel and
+	// the body scrolls beneath it.
+	lines = append(lines, "  "+stTitle.Render(truncateWidth(m.targetLine(sel), max(width-2, 1))))
 	lines = append(lines, stDim.Render("  "+sel.ID))
 	if preview := bodyPreview(sel.Content, width-4); preview != "" {
 		lines = append(lines, stDim.Render("  "+preview))
@@ -363,14 +417,21 @@ func (m *Model) detailPanel(width, height int) string {
 	return padBlock(lines, width, height)
 }
 
-func (m *Model) metaBlock(sel *model.Message, width int) []string {
-	pane, live := m.paneFor(sel)
-	target := "目标: " + sel.Target.Display()
-	if live && sel.Target.PaneLabel != sel.Target.Pane {
-		target += "  (" + pane.ID + ")"
-	} else if !live && sel.Target.Pane != "" {
-		target += "  (面板未找到)"
+// targetLine is the detail panel's headline: where the message goes, named from
+// live herdr state, plus the pane id so an identically named pane stays
+// distinguishable.
+func (m *Model) targetLine(msg *model.Message) string {
+	line := "目标: " + m.targetDisplay(msg)
+	if pane, ok := m.paneFor(msg); ok {
+		return line + "  (" + pane.ID + ")"
 	}
+	if msg.Target.Pane != "" {
+		return line + "  (面板未找到)"
+	}
+	return line
+}
+
+func (m *Model) metaBlock(sel *model.Message, width int) []string {
 	trigger := "触发: " + sel.Trigger.Kind.Label()
 	switch sel.Trigger.Kind {
 	case model.TriggerScheduled:
@@ -381,7 +442,6 @@ func (m *Model) metaBlock(sel *model.Message, width int) []string {
 		trigger += fmt.Sprintf(" (稳定 %d秒)", int(sel.SettleWindow()/time.Second))
 	}
 	out := []string{
-		stDim.Render(truncateWidth(target, width)),
 		stDim.Render(truncateWidth(trigger, width)),
 		styleByStatus(sel.Status).Render("状态: " + sel.Status.Label()),
 	}
@@ -606,14 +666,13 @@ func (m *Model) treePreviewPanel(width, bodyHeight int, showSelection bool) stri
 		out = append(out, stDim.Render("  "+item.hint))
 		return padBlock(out, width, bodyHeight)
 	}
-
-	out = append(out, stDim.Render("  "+item.pane.ID))
+	// The pane's own name leads the preview, the way it leads the detail panel;
+	// the tab and id are the address under it.
+	out = append(out, stTitle.Render("  "+truncateWidth(item.label, max(width-4, 1))))
 	if item.tabLabel != "" {
 		out = append(out, stDim.Render("  标签: "+truncateWidth(item.tabLabel, max(width-4, 1))))
 	}
-	if label := item.label; label != "" {
-		out = append(out, stTitle.Render("  "+truncateWidth(label, max(width-4, 1))))
-	}
+	out = append(out, stDim.Render("  "+item.pane.ID))
 	if showSelection {
 		if paneMark(p, []string{item.key}) == "●" {
 			out = append(out, stOk.Render("  ● 已选择"))

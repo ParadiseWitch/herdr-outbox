@@ -3,7 +3,6 @@ package ui
 import (
 	"context"
 	"strconv"
-	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -304,6 +303,9 @@ func pluralPanes(n int) string {
 	return strconv.Itoa(n) + " 个面板"
 }
 
+// paneHint is the quiet column on a pane row: what is running there, plus the
+// stable name. The row label already carries the pane title, so repeating it
+// here would say nothing; the ordinal is what survives a rename.
 func paneHint(p herdr.Pane) string {
 	status := p.AgentStatus
 	if status == "" {
@@ -312,7 +314,7 @@ func paneHint(p herdr.Pane) string {
 	if p.Agent == "" {
 		status = "shell"
 	}
-	base := truncate(strings.TrimSpace(p.TerminalTitleClean), 34)
+	base := p.Ordinal
 	if base == "" {
 		base = p.ID
 	}
@@ -373,7 +375,7 @@ func (m *Model) applyTarget(t model.Target) (tea.Model, tea.Cmd) {
 		m.setNotice("目标更改失败: " + err.Error())
 		return m, m.loadMsg()
 	}
-	m.setNotice("目标已设为 " + t.Display())
+	m.setNotice("目标已设为 " + m.targetLabel(t))
 	return m, tea.Batch(m.loadMsg(), m.snapshotCmd())
 }
 

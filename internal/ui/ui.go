@@ -542,7 +542,9 @@ func (m *Model) visible() []*model.Message {
 		}
 		if m.filter.Query != "" {
 			q := strings.ToLower(m.filter.Query)
-			haystack := strings.ToLower(msg.Title + " " + msg.Content + " " + msg.Target.Display())
+			// Search the live pane name as well, so a query that matches what the
+			// terminal is titled finds the message aimed at it.
+			haystack := strings.ToLower(msg.Title + " " + msg.Content + " " + msg.Target.Display() + " " + m.targetDisplay(msg))
 			if !strings.Contains(haystack, q) {
 				continue
 			}
@@ -610,10 +612,18 @@ func (m *Model) move(delta int) {
 }
 
 func (m *Model) paneFor(msg *model.Message) (herdr.Pane, bool) {
-	if msg == nil || m.snapshot == nil {
+	if msg == nil {
 		return herdr.Pane{}, false
 	}
-	return m.snapshot.Resolve(msg.Target)
+	return m.paneForTarget(msg.Target)
+}
+
+// paneForTarget resolves a stored target against the live herdr snapshot.
+func (m *Model) paneForTarget(t model.Target) (herdr.Pane, bool) {
+	if m.snapshot == nil {
+		return herdr.Pane{}, false
+	}
+	return m.snapshot.Resolve(t)
 }
 
 func (m *Model) armIfNeeded(ctx context.Context, msg *model.Message) error {

@@ -243,6 +243,84 @@ func TestDetailListsTargetTriggerAndStatus(t *testing.T) {
 	}
 }
 
+// A pane herdr has renamed or retitled must be named by that live name, not by
+// the label cached when the message was written.
+func TestTargetNamePrefersLivePaneTitle(t *testing.T) {
+	m, st, fake := newTestModel(t, 116, 34)
+	fake.Panes[0].TerminalTitleClean = "重构支付模块"
+	fake.Panes[0].Label = "支付"
+	snap, err := fake.Snapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.snapshot = snap
+	if _, err := st.Create(&model.Message{
+		Content: "hello",
+		Target:  model.Target{Workspace: "w1", WorkspaceLabel: "研究", Pane: "w1:p1", PaneLabel: "qodercli-1", Agent: "qodercli"},
+		Trigger: model.Trigger{Kind: model.TriggerManual},
+		Status:  model.StatusPending,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	m.reload(t)
+
+	view := ansi.Strip(m.View())
+	if !strings.Contains(view, "目标: 研究 / 重构支付模块") {
+		t.Fatalf("detail does not use the live pane title:\n%s", view)
+	}
+	// The list row's second line names the target the same way.
+	if !strings.Contains(view, "→ 研究 / 重构支付模块") {
+		t.Fatalf("list row does not use the live pane title:\n%s", view)
+	}
+
+	// A pane that no longer exists keeps the stored label rather than going blank.
+	m.snapshot = nil
+	if got := m.targetDisplay(m.selected()); got != "研究 / qodercli-1" {
+		t.Fatalf("offline target label = %q", got)
+	}
+}
+
+// The destination decides a message, so it heads the preview panel: the target
+// line must come before the body it describes.
+func TestDetailPanelHeadsWithTarget(t *testing.T) {
+	m, st, _ := newTestModel(t, 116, 34)
+	if _, err := st.Create(&model.Message{
+		Content: "# 标题\n\n第一行正文\n第二行正文\n",
+		Target:  model.Target{Workspace: "w1", WorkspaceLabel: "研究", Pane: "w1:p1", PaneLabel: "qodercli-1", Agent: "qodercli"},
+		Trigger: model.Trigger{Kind: model.TriggerManual},
+		Status:  model.StatusPending,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	m.reload(t)
+	lines := strings.Split(ansi.Strip(m.View()), "\n")
+	target, body := -1, -1
+	for i, l := range lines {
+		if target < 0 && strings.Contains(l, "目标: 研究 / qodercli-1") {
+			target = i
+		}
+		if body < 0 && strings.Contains(l, "第一行正文") {
+			body = i
+		}
+	}
+	if target < 0 || body < 0 {
+		t.Fatalf("detail missing target (%d) or body (%d):\n%s", target, body, strings.Join(lines, "\n"))
+	}
+	if target > body {
+		t.Fatalf("target row %d is below body row %d", target, body)
+	}
+	// 触发/状态 stay in the footer block, below the body.
+	trigger := -1
+	for i, l := range lines {
+		if trigger < 0 && strings.Contains(l, "触发: 手动") {
+			trigger = i
+		}
+	}
+	if trigger < 0 || trigger < body {
+		t.Fatalf("触发 row should stay under the body, got line %d (body %d)", trigger, body)
+	}
+}
+
 // A waiting message can be waiting on something that will never happen. The list
 // has to say so rather than show a bare herdr status word.
 func TestWaitingRowShowsWhy(t *testing.T) {

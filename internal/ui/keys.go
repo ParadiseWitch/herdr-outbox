@@ -333,7 +333,7 @@ func (m *Model) sendNow(sel *model.Message) (tea.Model, tea.Cmd) {
 		m.deferTick = true
 	}
 	id := sel.ID
-	m.setNotice("正在发送 " + sel.Summary() + " 到 " + sel.Target.Display())
+	m.setNotice("正在发送 " + sel.Summary() + " 到 " + m.targetDisplay(sel))
 	return m, func() tea.Msg {
 		evs, err := m.provider.SendNow(context.Background(), id)
 		return sendDoneMsg{id: id, events: evs, err: err}
