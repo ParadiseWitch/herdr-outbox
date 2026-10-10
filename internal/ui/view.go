@@ -168,7 +168,7 @@ func (m *Model) listView(width, height int) string {
 			tabLine = append(tabLine, stDim.Render(" "))
 		}
 	}
-	
+
 	head := stDim.Render(" 发件箱")
 	lines := []string{head, strings.Join(tabLine, ""), stDim.Render(strings.Repeat("─", max(width, 1)))}
 	list := m.visible()
@@ -488,309 +488,150 @@ func (m *Model) overlayView(width, bodyHeight int) string {
 	return ""
 }
 
-// pickerSplitView renders the target picker with a side-by-side layout:
-// picker list on the left, pane preview on the right.
-func (m *Model) pickerSplitView(width, bodyHeight int) string {
-	leftW := width * 40 / 100
-	if leftW < 30 {
-		leftW = 30
-	}
-	if leftW > width-20 {
-		leftW = width - 20
-	}
-	rightW := width - leftW - 1
-
-	leftPanel := m.pickerLeftPanel(leftW, bodyHeight)
-	rightPanel := m.pickerRightPanel(rightW, bodyHeight)
-
-	divider := stDim.Render(strings.TrimRight(strings.Repeat("│\n", bodyHeight), "\n"))
-	joined := lipgloss.JoinHorizontal(lipgloss.Top, leftPanel, divider, rightPanel)
-	return joined
-}
-
-func (m *Model) pickerLeftPanel(width, bodyHeight int) string {
-	p := &m.picker
-	out := []string{stTitle.Render(p.title)}
-	if p.filter != "" {
-		out = append(out, "  筛选: "+p.filter)
-	}
-	avail := max(bodyHeight-4, 3)
-	if len(p.items) == 0 {
-		out = append(out, "", stDim.Render("  没有匹配 "+strconv.Quote(p.filter)))
-		out = append(out, stDim.Render("  退格放宽 · esc 返回"))
-		return padBlock(out, width, bodyHeight)
-	}
-	window := listWindow(p.cursor, len(p.items), avail)
-	if window.start > 0 {
-		out = append(out, stDim.Render("  ↑ "+strconv.Itoa(window.start)+" 更多"))
-	}
-	for i := window.start; i < window.end; i++ {
-		item := p.items[i]
-		label := "  " + truncateWidth(item.label, width-4)
-		if i == p.cursor {
-			out = append(out, stSelected.Render(pad(label, width-1)))
-		} else {
-			out = append(out, label)
-		}
-	}
-	if window.end < len(p.items) {
-		out = append(out, stDim.Render("  ↓ "+strconv.Itoa(len(p.items)-window.end)+" 更多"))
-	}
-	out = append(out, "", stDim.Render("输入筛选 · 回车选择 · esc 返回"))
-	return padBlock(out, width, bodyHeight)
-}
-
-func (m *Model) pickerRightPanel(width, bodyHeight int) string {
-	p := &m.picker
-	out := []string{stDim.Render(" 面板预览")}
-	out = append(out, stDim.Render(strings.Repeat("─", max(width, 1))))
-
-	if p.cursor >= len(p.items) {
-		out = append(out, "", stDim.Render("  选择面板以预览内容"))
-		return padBlock(out, width, bodyHeight)
-	}
-
-	item := p.items[p.cursor]
-	out = append(out, stDim.Render("  "+item.pane.ID))
-	if label := paneLabel(item.pane); label != "" {
-		out = append(out, stTitle.Render("  "+truncateWidth(label, width-4)))
-	}
-	out = append(out, "")
-
-	if p.panePreview == "" {
-		out = append(out, stDim.Render("  加载中…"))
-	} else {
-		lines := strings.Split(p.panePreview, "\n")
-		avail := bodyHeight - len(out) - 2
-		if avail < 1 {
-			avail = 1
-		}
-		if len(lines) > avail {
-			lines = lines[:avail]
-		}
-		for _, line := range lines {
-			out = append(out, "  "+truncateWidth(line, width-4))
-		}
-	}
-	return padBlock(out, width, bodyHeight)
-}
-
 // treePickerSplitView renders the target picker as a tree with a side-by-side layout.
 func (m *Model) treePickerSplitView(width, bodyHeight int) string {
-	leftW := width * 40 / 100
-	if leftW < 30 {
-		leftW = 30
-	}
-	if leftW > width-20 {
-		leftW = width - 20
-	}
-	rightW := width - leftW - 1
-
-	leftPanel := m.treePickerLeftPanel(leftW, bodyHeight)
-	rightPanel := m.treePickerRightPanel(rightW, bodyHeight)
-
-	divider := stDim.Render(strings.TrimRight(strings.Repeat("│\n", bodyHeight), "\n"))
-	joined := lipgloss.JoinHorizontal(lipgloss.Top, leftPanel, divider, rightPanel)
-	return joined
-}
-
-func (m *Model) treePickerLeftPanel(width, bodyHeight int) string {
-	p := &m.picker
-	out := []string{stTitle.Render(p.title)}
-	avail := max(bodyHeight-4, 3)
-	if len(p.treeItems) == 0 {
-		out = append(out, "", stDim.Render("  没有可用的工作区或面板"))
-		out = append(out, stDim.Render("  esc 返回"))
-		return padBlock(out, width, bodyHeight)
-	}
-	window := listWindow(p.cursor, len(p.treeItems), avail)
-	if window.start > 0 {
-		out = append(out, stDim.Render("  ↑ "+strconv.Itoa(window.start)+" 更多"))
-	}
-	for i := window.start; i < window.end; i++ {
-		item := p.treeItems[i]
-		var prefix, label string
-		if item.isParent {
-			if item.expanded {
-				prefix = "▾ "
-			} else {
-				prefix = "▸ "
-			}
-			label = prefix + truncateWidth(item.label, width-6)
-			if i == p.cursor {
-				out = append(out, stSelected.Render(pad(label, width-1)))
-			} else {
-				out = append(out, stTitle.Render(label)+stDim.Render("  "+item.hint))
-			}
-		} else {
-			prefix = "  "
-			label = prefix + truncateWidth(item.label, width-6)
-			if i == p.cursor {
-				out = append(out, stSelected.Render(pad(label, width-1)))
-			} else {
-				out = append(out, label+stDim.Render("  "+item.hint))
-			}
-		}
-	}
-	if window.end < len(p.treeItems) {
-		out = append(out, stDim.Render("  ↓ "+strconv.Itoa(len(p.treeItems)-window.end)+" 更多"))
-	}
-	out = append(out, "", stDim.Render("↑↓ 移动 · ←→/回车 展开 · 回车选择 · esc 返回"))
-	return padBlock(out, width, bodyHeight)
-}
-
-func (m *Model) treePickerRightPanel(width, bodyHeight int) string {
-	p := &m.picker
-	out := []string{stDim.Render(" 面板预览")}
-	out = append(out, stDim.Render(strings.Repeat("─", max(width, 1))))
-
-	if p.cursor >= len(p.treeItems) {
-		out = append(out, "", stDim.Render("  选择面板以预览内容"))
-		return padBlock(out, width, bodyHeight)
-	}
-
-	item := p.treeItems[p.cursor]
-	if item.isParent {
-		out = append(out, "", stDim.Render("  选择面板以预览内容"))
-		return padBlock(out, width, bodyHeight)
-	}
-
-	out = append(out, stDim.Render("  "+item.pane.ID))
-	if label := item.label; label != "" {
-		out = append(out, stTitle.Render("  "+truncateWidth(label, width-4)))
-	}
-	out = append(out, "")
-
-	if p.panePreview == "" {
-		out = append(out, stDim.Render("  加载中…"))
-	} else {
-		lines := strings.Split(p.panePreview, "\n")
-		avail := bodyHeight - len(out) - 2
-		if avail < 1 {
-			avail = 1
-		}
-		if len(lines) > avail {
-			lines = lines[:avail]
-		}
-		for _, line := range lines {
-			out = append(out, "  "+truncateWidth(line, width-4))
-		}
-	}
-	return padBlock(out, width, bodyHeight)
+	leftW := treePanelWidth(width, 40, 30, 20)
+	leftPanel := padBlock(treeRows(&m.picker, leftW, bodyHeight, false,
+		"↑↓ 移动 · ←→/回车 展开 · 回车选择 · esc 返回"), leftW, bodyHeight)
+	rightPanel := m.treePickerRightPanel(width-leftW-1, bodyHeight)
+	return treeSplitJoin(leftPanel, rightPanel, bodyHeight)
 }
 
 // workspaceFilterSplitView renders the workspace filter picker as a tree with checkboxes.
 func (m *Model) workspaceFilterSplitView(width, bodyHeight int) string {
-	leftW := width * 50 / 100
-	if leftW < 35 {
-		leftW = 35
-	}
-	if leftW > width-15 {
-		leftW = width - 15
-	}
-	rightW := width - leftW - 1
-
-	leftPanel := m.workspaceFilterLeftPanel(leftW, bodyHeight)
-	rightPanel := m.workspaceFilterRightPanel(rightW, bodyHeight)
-
-	divider := stDim.Render(strings.TrimRight(strings.Repeat("│\n", bodyHeight), "\n"))
-	joined := lipgloss.JoinHorizontal(lipgloss.Top, leftPanel, divider, rightPanel)
-	return joined
+	leftW := treePanelWidth(width, 50, 35, 15)
+	leftPanel := padBlock(treeRows(&m.picker, leftW, bodyHeight, true,
+		"空格选择(整组可全选) · ↑↓ 移动 · ←→ 展开 · 回车确认 · esc 返回"), leftW, bodyHeight)
+	rightPanel := m.workspaceFilterRightPanel(width-leftW-1, bodyHeight)
+	return treeSplitJoin(leftPanel, rightPanel, bodyHeight)
 }
 
-func (m *Model) workspaceFilterLeftPanel(width, bodyHeight int) string {
-	p := &m.picker
-	out := []string{stTitle.Render(p.title)}
-	avail := max(bodyHeight-4, 3)
-	if len(p.treeItems) == 0 {
-		out = append(out, "", stDim.Render("  没有可用的工作区或面板"))
-		out = append(out, stDim.Render("  esc 返回"))
-		return padBlock(out, width, bodyHeight)
+func treePanelWidth(width, pct, minLeft, minRight int) int {
+	leftW := width * pct / 100
+	if leftW < minLeft {
+		leftW = minLeft
 	}
-	window := listWindow(p.cursor, len(p.treeItems), avail)
+	if leftW > width-minRight {
+		leftW = width - minRight
+	}
+	return leftW
+}
+
+func treeSplitJoin(leftPanel, rightPanel string, bodyHeight int) string {
+	divider := stDim.Render(strings.TrimRight(strings.Repeat("│\n", bodyHeight), "\n"))
+	return lipgloss.JoinHorizontal(lipgloss.Top, leftPanel, divider, rightPanel)
+}
+
+// treeRows renders the flattened workspace → tab → pane tree. Indent comes from
+// the row depth, group rows carry the expand marker, and `checkbox` adds the
+// filter's selection markers: a group row is checked only when every pane below
+// it is, so it reads as the whole-subtree toggle it is.
+func treeRows(p *picker, width, bodyHeight int, checkbox bool, hint string) []string {
+	out := []string{stTitle.Render(p.title)}
+	if len(p.treeItems) == 0 {
+		return append(out, "", stDim.Render("  没有可用的工作区或面板"), stDim.Render("  esc 返回"))
+	}
+	window := listWindow(p.cursor, len(p.treeItems), max(bodyHeight-4, 3))
 	if window.start > 0 {
 		out = append(out, stDim.Render("  ↑ "+strconv.Itoa(window.start)+" 更多"))
 	}
 	for i := window.start; i < window.end; i++ {
 		item := p.treeItems[i]
-		var prefix, label string
+		indent := strings.Repeat("  ", item.depth)
+		marker := "  "
+		labelWidth := width - 6 - 2*item.depth
 		if item.isParent {
+			marker = "▸ "
 			if item.expanded {
-				prefix = "▾ "
-			} else {
-				prefix = "▸ "
+				marker = "▾ "
 			}
-			label = prefix + truncateWidth(item.label, width-6)
-			if i == p.cursor {
-				out = append(out, stSelected.Render(pad(label, width-1)))
-			} else {
-				out = append(out, stTitle.Render(label)+stDim.Render("  "+item.hint))
+			if checkbox {
+				marker = paneMark(p, item.paneIDs) + " " + marker
+				labelWidth -= 2
 			}
-		} else {
-			// Checkbox for pane selection.
-			checked := "○"
-			if p.selectedPanes != nil && p.selectedPanes[item.key] {
-				checked = "●"
-			}
-			prefix = "  " + checked + " "
-			label = prefix + truncateWidth(item.label, width-8)
-			if i == p.cursor {
-				out = append(out, stSelected.Render(pad(label, width-1)))
-			} else {
-				out = append(out, label+stDim.Render("  "+item.hint))
-			}
+		} else if checkbox {
+			marker = paneMark(p, []string{item.key}) + " "
 		}
+		label := indent + marker + truncateWidth(item.label, max(labelWidth, 1))
+		if i == p.cursor {
+			out = append(out, stSelected.Render(pad(label, width-1)))
+			continue
+		}
+		if item.isParent {
+			out = append(out, stTitle.Render(label)+stDim.Render("  "+item.hint))
+			continue
+		}
+		out = append(out, label+stDim.Render("  "+item.hint))
 	}
 	if window.end < len(p.treeItems) {
 		out = append(out, stDim.Render("  ↓ "+strconv.Itoa(len(p.treeItems)-window.end)+" 更多"))
 	}
-	out = append(out, "", stDim.Render("空格选择 · ↑↓ 移动 · ←→ 展开 · 回车确认 · esc 返回"))
-	return padBlock(out, width, bodyHeight)
+	return append(out, "", stDim.Render(hint))
+}
+
+func paneMark(p *picker, ids []string) string {
+	if len(ids) == 0 || p.selectedPanes == nil {
+		return "○"
+	}
+	for _, id := range ids {
+		if !p.selectedPanes[id] {
+			return "○"
+		}
+	}
+	return "●"
+}
+
+// treePickerRightPanel previews the pane under the cursor; a group row instead
+// lists what it contains, so collapsing a workspace still tells the user what is
+// inside it.
+func (m *Model) treePickerRightPanel(width, bodyHeight int) string {
+	return m.treePreviewPanel(width, bodyHeight, false)
 }
 
 func (m *Model) workspaceFilterRightPanel(width, bodyHeight int) string {
+	return m.treePreviewPanel(width, bodyHeight, true)
+}
+
+func (m *Model) treePreviewPanel(width, bodyHeight int, showSelection bool) string {
 	p := &m.picker
 	out := []string{stDim.Render(" 面板预览")}
 	out = append(out, stDim.Render(strings.Repeat("─", max(width, 1))))
 
 	if p.cursor >= len(p.treeItems) {
-		out = append(out, "", stDim.Render("  选择面板以预览内容"))
-		return padBlock(out, width, bodyHeight)
+		return padBlock(append(out, "", stDim.Render("  选择面板以预览内容")), width, bodyHeight)
 	}
-
 	item := p.treeItems[p.cursor]
 	if item.isParent {
-		out = append(out, "", stDim.Render("  选择面板以预览内容"))
+		out = append(out, stTitle.Render("  "+truncateWidth(item.label, max(width-4, 1))))
+		out = append(out, stDim.Render("  "+item.hint))
 		return padBlock(out, width, bodyHeight)
 	}
 
 	out = append(out, stDim.Render("  "+item.pane.ID))
-	if label := item.label; label != "" {
-		out = append(out, stTitle.Render("  "+truncateWidth(label, width-4)))
+	if item.tabLabel != "" {
+		out = append(out, stDim.Render("  标签: "+truncateWidth(item.tabLabel, max(width-4, 1))))
 	}
-	
-	// Show selection status.
-	if p.selectedPanes != nil && p.selectedPanes[item.key] {
-		out = append(out, stOk.Render("  ● 已选择"))
-	} else {
-		out = append(out, stDim.Render("  ○ 未选择"))
+	if label := item.label; label != "" {
+		out = append(out, stTitle.Render("  "+truncateWidth(label, max(width-4, 1))))
+	}
+	if showSelection {
+		if paneMark(p, []string{item.key}) == "●" {
+			out = append(out, stOk.Render("  ● 已选择"))
+		} else {
+			out = append(out, stDim.Render("  ○ 未选择"))
+		}
 	}
 	out = append(out, "")
 
 	if p.panePreview == "" {
-		out = append(out, stDim.Render("  加载中…"))
-	} else {
-		lines := strings.Split(p.panePreview, "\n")
-		avail := bodyHeight - len(out) - 2
-		if avail < 1 {
-			avail = 1
-		}
-		if len(lines) > avail {
-			lines = lines[:avail]
-		}
-		for _, line := range lines {
-			out = append(out, "  "+truncateWidth(line, width-4))
-		}
+		return padBlock(append(out, stDim.Render("  加载中…")), width, bodyHeight)
+	}
+	lines := strings.Split(p.panePreview, "\n")
+	if avail := max(bodyHeight-len(out)-2, 1); len(lines) > avail {
+		lines = lines[:avail]
+	}
+	for _, line := range lines {
+		out = append(out, "  "+truncateWidth(line, max(width-4, 1)))
 	}
 	return padBlock(out, width, bodyHeight)
 }
@@ -804,10 +645,10 @@ func (m *Model) helpView(width int) string {
 		{"1-4", "全部/当前/未发送/已发送"},
 		{"s", "立即发送"},
 		{"t", "选择触发方式（手动、完成后、定时）"},
-		{"p", "从 herdr 实时状态选择目标面板"},
+		{"p", "在工作区/标签/面板三级树里选择目标面板"},
 		{"u", "暂存为草稿（不发送）"},
 		{"f c d", "收藏 · 克隆 · 删除"},
-		{"x", "筛选工作区/面板（多选）"},
+		{"x", "筛选工作区/标签/面板（多选，整组可一次选中）"},
 		{"/", "搜索消息（标题、内容、目标）"},
 		{"r R", "刷新 herdr 状态 · 执行一次调度"},
 		{"L", "调度日志"},
@@ -875,13 +716,9 @@ func (m *Model) pickerOverlay(width, bodyHeight int) string {
 		out = append(out, "  "+p.prompt, "  > "+p.input+"▏", "", stDim.Render("回车确认 · esc 返回"))
 		return strings.Join(out, "\n")
 	}
-	if p.filter != "" {
-		out = append(out, "  筛选: "+p.filter)
-	}
 	avail := max(bodyHeight-4, 3)
 	if len(p.items) == 0 {
-		out = append(out, "", stDim.Render("  没有匹配 "+strconv.Quote(p.filter)))
-		out = append(out, stDim.Render("  退格放宽 · esc 返回"))
+		out = append(out, "", stDim.Render("  没有可选项"))
 		return strings.Join(out, "\n")
 	}
 	window := listWindow(p.cursor, len(p.items), avail)
@@ -912,7 +749,7 @@ func (m *Model) pickerOverlay(width, bodyHeight int) string {
 	if window.end < len(p.items) {
 		out = append(out, stDim.Render("  ↓ "+strconv.Itoa(len(p.items)-window.end)+" 更多"))
 	}
-	out = append(out, stDim.Render("输入筛选 · 回车选择 · esc 返回"))
+	out = append(out, stDim.Render("↑↓ 移动 · 回车选择 · esc 返回"))
 	return strings.Join(out, "\n")
 }
 

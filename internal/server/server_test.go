@@ -34,6 +34,29 @@ func newTestServer(t *testing.T) (*Server, context.Context, string, *herdr.Fake)
 	return New(st, scheduler.NewEngine(st, fake, led), led, dir, time.Hour), ctx, dir, fake
 }
 
+// The tree in the TUI is workspace → tab → pane, so a remote TUI has to receive
+// the tab level too; dropping it in the wire types would silently flatten the
+// picker back to two levels.
+func TestSnapshotCarriesTheTabLevel(t *testing.T) {
+	srv, ctx, _, fake := newTestServer(t)
+	fake.Tabs = []herdr.Tab{{ID: "w1:t1", WorkspaceID: "w1", Label: "代码"}}
+	fake.Panes[0].TabID = "w1:t1"
+	if err := srv.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	snap, err := client.New("http://" + srv.Addr()).Snapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snap.Tabs) != 1 {
+		t.Fatalf("tabs across the wire = %+v", snap.Tabs)
+	}
+	tab := snap.Tabs[0]
+	if tab.ID != "w1:t1" || tab.Display() != "代码" || tab.PaneCount != 1 || tab.WorkspaceID != "w1" {
+		t.Fatalf("tab lost fields across the wire: %+v", tab)
+	}
+}
+
 // A TUI holds /api/events open for its whole lifetime, so a drain that waits for
 // idle connections would never finish and the process would outlive `server stop`.
 func TestWaitReturnsWhileAStreamIsOpen(t *testing.T) {

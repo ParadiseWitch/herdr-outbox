@@ -12,6 +12,7 @@ import (
 type Fake struct {
 	mu          sync.Mutex
 	Workspaces  []Workspace
+	Tabs        []Tab
 	Panes       []Pane
 	Unreachable bool
 
@@ -66,7 +67,9 @@ func (f *Fake) Snapshot(ctx context.Context) (*Snapshot, error) {
 	}
 	ws := make([]Workspace, len(f.Workspaces))
 	copy(ws, f.Workspaces)
-	snap := Build(ws, panes, agents)
+	tabs := make([]Tab, len(f.Tabs))
+	copy(tabs, f.Tabs)
+	snap := Build(ws, tabs, panes, agents)
 	if f.NoAgentSeq {
 		for i := range snap.Panes {
 			snap.Panes[i].StateChangeSeq = 0

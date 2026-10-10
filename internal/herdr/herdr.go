@@ -68,6 +68,38 @@ type Workspace struct {
 	ActiveTab   string `json:"active_tab_id"`
 }
 
+// Tab is one herdr tab: the grouping between a workspace and its panes. herdr
+// reports the label; `tab list` is optional, so a missing label falls back to the
+// id suffix.
+type Tab struct {
+	ID          string `json:"tab_id"`
+	WorkspaceID string `json:"workspace_id"`
+	Label       string `json:"label"`
+	Number      int    `json:"number"`
+	PaneCount   int    `json:"pane_count"`
+	AgentStatus string `json:"agent_status"`
+	Focused     bool   `json:"focused"`
+}
+
+func (t Tab) Display() string {
+	if strings.TrimSpace(t.Label) != "" {
+		return t.Label
+	}
+	if name := TabName(t.ID); name != "" {
+		return "标签 " + name
+	}
+	return t.ID
+}
+
+// TabName is the short form of a tab id: w9:tB becomes tB, so a tab herdr gives
+// no label still reads shorter than its full id.
+func TabName(id string) string {
+	if i := strings.LastIndexByte(id, ':'); i >= 0 && i+1 < len(id) {
+		return id[i+1:]
+	}
+	return ""
+}
+
 func (w Workspace) Display() string {
 	if strings.TrimSpace(w.Label) != "" {
 		return w.Label
@@ -173,6 +205,7 @@ func (p Pane) SessionID() string {
 // Snapshot is one consistent-enough read of herdr runtime state.
 type Snapshot struct {
 	Workspaces []Workspace
+	Tabs       []Tab
 	Panes      []Pane
 	FetchedAt  time.Time
 	Source     string
@@ -182,7 +215,7 @@ type Snapshot struct {
 	AgentSeqError string `json:"agent_seq_error,omitempty"`
 }
 
-func Build(workspaces []Workspace, panes []Pane, agents []Pane) *Snapshot {
+func Build(workspaces []Workspace, tabs []Tab, panes []Pane, agents []Pane) *Snapshot {
 	out := make([]Pane, len(panes))
 	copy(out, panes)
 	index := make(map[string]int, len(out))
@@ -238,7 +271,41 @@ func Build(workspaces []Workspace, panes []Pane, agents []Pane) *Snapshot {
 		counts[key]++
 		out[i].Ordinal = p.Agent + "-" + strconv.Itoa(counts[key])
 	}
-	return &Snapshot{Workspaces: workspaces, Panes: out, FetchedAt: time.Now(), Source: "snapshot"}
+	// Tabs come from herdr when `tab list` answered; otherwise they are derived
+	// from the panes, so the tree always has a tab level to group by. Pane order
+	// is already workspace-then-tab, so grouping inherits that order.
+	ordered := make([]Tab, 0, len(out))
+	tabAt := make(map[string]int, len(out))
+	meta := make(map[string]Tab, len(tabs))
+	for _, t := range tabs {
+		meta[t.ID] = t
+	}
+	for _, p := range out {
+		if p.TabID == "" {
+			continue
+		}
+		if i, ok := tabAt[p.TabID]; ok {
+			ordered[i].Focused = ordered[i].Focused || p.Focused
+			ordered[i].PaneCount++
+			continue
+		}
+
+		t := Tab{ID: p.TabID, WorkspaceID: p.WorkspaceID, PaneCount: 1}
+		if m, ok := meta[p.TabID]; ok {
+			if m.Label != "" {
+				t.Label = m.Label
+			}
+			t.Number = m.Number
+			t.AgentStatus = m.AgentStatus
+			t.Focused = m.Focused || p.Focused
+			if m.WorkspaceID != "" {
+				t.WorkspaceID = m.WorkspaceID
+			}
+		}
+		ordered = append(ordered, t)
+		tabAt[p.TabID] = len(ordered) - 1
+	}
+	return &Snapshot{Workspaces: workspaces, Tabs: ordered, Panes: out, FetchedAt: time.Now(), Source: "snapshot"}
 }
 
 // numericTail reads the digits at the end of an opaque id. herdr reuses suffixes
@@ -294,6 +361,19 @@ func (s *Snapshot) Workspace(id string) (Workspace, bool) {
 		}
 	}
 	return Workspace{}, false
+}
+
+// Tab finds a tab by id so the tree can label the middle level.
+func (s *Snapshot) Tab(id string) (Tab, bool) {
+	if s == nil || id == "" {
+		return Tab{}, false
+	}
+	for _, t := range s.Tabs {
+		if t.ID == id {
+			return t, true
+		}
+	}
+	return Tab{}, false
 }
 
 // Resolve maps a stored target onto a live pane. It prefers the pane id and falls

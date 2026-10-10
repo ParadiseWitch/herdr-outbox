@@ -17,6 +17,10 @@ const workspaceListJSON = `{"id":"cli:workspace:list","result":{"type":"workspac
 {"active_tab_id":"w9:t1","agent_status":"idle","focused":false,"label":"app","number":1,"pane_count":6,"tab_count":2,"workspace_id":"w9"},
 {"active_tab_id":"wK:t1","agent_status":"working","focused":true,"label":"herdr-outbox","number":3,"pane_count":2,"tab_count":1,"workspace_id":"wK"}]}}`
 
+const tabListJSON = `{"id":"cli:tab:list","result":{"tabs":[
+{"agent_status":"done","focused":false,"label":"代码","number":1,"pane_count":5,"tab_id":"w9:t1","workspace_id":"w9"},
+{"agent_status":"idle","focused":true,"label":"log","number":2,"pane_count":1,"tab_id":"wK:t1","workspace_id":"wK"}],"type":"tab_list"}}`
+
 const paneListJSON = `{"id":"cli:pane:list","result":{"panes":[
 {"agent":"qodercli","agent_session":{"agent":"qodercli","kind":"id","source":"herdr:qodercli","value":"7f255ba3"},"agent_status":"working","cwd":"D:\\myproject\\herdr-outbox","focused":false,"pane_id":"wK:p1","revision":4,"tab_id":"wK:t1","terminal_id":"term_1","terminal_title":"实现 go bubbletea tui | Working","terminal_title_stripped":"实现 go bubbletea tui | Working","workspace_id":"wK"},
 {"agent_status":"unknown","cwd":"D:\\myproject\\herdr-outbox","focused":true,"pane_id":"wK:p2","revision":1,"tab_id":"wK:t1","terminal_id":"term_2","terminal_title":"pwsh.EXE","terminal_title_stripped":"pwsh.EXE","workspace_id":"wK"},
@@ -50,6 +54,13 @@ func decodeSnapshot(t *testing.T) *Snapshot {
 	if err := json.Unmarshal(resultOf(t, workspaceListJSON), &ws); err != nil {
 		t.Fatal(err)
 	}
+	var ts struct {
+		Tabs []Tab `json:"tabs"`
+	}
+	if err := json.Unmarshal(resultOf(t, tabListJSON), &ts); err != nil {
+		t.Fatal(err)
+	}
+	wsTabs := ts.Tabs
 	var ps struct {
 		Panes []Pane `json:"panes"`
 	}
@@ -62,7 +73,7 @@ func decodeSnapshot(t *testing.T) *Snapshot {
 	if err := json.Unmarshal(resultOf(t, agentListJSON), &as); err != nil {
 		t.Fatal(err)
 	}
-	return Build(ws.Workspaces, ps.Panes, as.Agents)
+	return Build(ws.Workspaces, wsTabs, ps.Panes, as.Agents)
 }
 
 func TestDecodesLiveHerdrPayloads(t *testing.T) {
@@ -95,6 +106,19 @@ func TestDecodesLiveHerdrPayloads(t *testing.T) {
 	}
 	if p2.StateChangeSeq != 0 {
 		t.Fatalf("shell pane picked up agent state: %+v", p2)
+	}
+	// Tabs are the level between workspace and pane: labelled from `tab list`,
+	// counted from the panes that actually live in them, and only present for a
+	// tab with panes.
+	if len(snap.Tabs) != 1 {
+		t.Fatalf("tabs = %+v", snap.Tabs)
+	}
+	tab := snap.Tabs[0]
+	if tab.ID != "wK:t1" || tab.Display() != "log" || tab.PaneCount != 3 || tab.WorkspaceID != "wK" {
+		t.Fatalf("tab = %+v", tab)
+	}
+	if !tab.Focused {
+		t.Fatalf("tab lost focus from its focused pane: %+v", tab)
 	}
 }
 
@@ -258,13 +282,24 @@ func TestPaneIDSuffixesSortBesideTheirNumber(t *testing.T) {
 		{ID: "w9:p1N", WorkspaceID: "w9", TabID: "w9:t2"},
 		{ID: "w9:p2", WorkspaceID: "w9", TabID: "w9:t2"},
 	}
-	snap := Build(nil, panes, nil)
+	snap := Build(nil, nil, panes, nil)
 	var order []string
 	for _, p := range snap.Panes {
 		order = append(order, p.ID)
 	}
 	if strings.Join(order, " ") != "w9:p1 w9:p1N w9:p2 w9:p3" {
 		t.Fatalf("order = %v", order)
+	}
+	// Tabs are derived from panes when herdr gave no `tab list`: one entry per
+	// tab id, in pane order, with the panes counted.
+	if len(snap.Tabs) != 2 || snap.Tabs[0].ID != "w9:t2" || snap.Tabs[1].ID != "w9:t10" {
+		t.Fatalf("derived tabs = %+v", snap.Tabs)
+	}
+	if snap.Tabs[0].PaneCount != 3 || snap.Tabs[1].PaneCount != 1 {
+		t.Fatalf("derived tab pane counts = %+v", snap.Tabs)
+	}
+	if snap.Tabs[0].Display() != "标签 t2" {
+		t.Fatalf("unlabelled tab display = %q", snap.Tabs[0].Display())
 	}
 }
 

@@ -41,6 +41,7 @@ type Trigger struct {
 
 type SnapshotResponse struct {
 	Workspaces []Workspace `json:"workspaces"`
+	Tabs       []Tab       `json:"tabs"`
 	Panes      []Pane      `json:"panes"`
 	FetchedAt  time.Time   `json:"fetched_at"`
 	Source     string      `json:"source"`
@@ -58,6 +59,17 @@ type Workspace struct {
 	PaneCount   int    `json:"pane_count"`
 	TabCount    int    `json:"tab_count"`
 	ActiveTab   string `json:"active_tab_id"`
+}
+
+// Tab is the level between a workspace and its panes in the herdr tree.
+type Tab struct {
+	ID          string `json:"tab_id"`
+	WorkspaceID string `json:"workspace_id"`
+	Label       string `json:"label"`
+	Number      int    `json:"number"`
+	PaneCount   int    `json:"pane_count"`
+	AgentStatus string `json:"agent_status"`
+	Focused     bool   `json:"focused"`
 }
 
 type Pane struct {

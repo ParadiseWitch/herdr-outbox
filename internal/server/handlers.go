@@ -391,6 +391,18 @@ func toAPISnapshot(snap *herdr.Snapshot) api.SnapshotResponse {
 			ActiveTab:   w.ActiveTab,
 		}
 	}
+	tabs := make([]api.Tab, len(snap.Tabs))
+	for i, t := range snap.Tabs {
+		tabs[i] = api.Tab{
+			ID:          t.ID,
+			WorkspaceID: t.WorkspaceID,
+			Label:       t.Label,
+			Number:      t.Number,
+			PaneCount:   t.PaneCount,
+			AgentStatus: t.AgentStatus,
+			Focused:     t.Focused,
+		}
+	}
 	panes := make([]api.Pane, len(snap.Panes))
 	for i, p := range snap.Panes {
 		panes[i] = api.Pane{
@@ -408,6 +420,7 @@ func toAPISnapshot(snap *herdr.Snapshot) api.SnapshotResponse {
 	}
 	return api.SnapshotResponse{
 		Workspaces:    ws,
+		Tabs:          tabs,
 		Panes:         panes,
 		FetchedAt:     snap.FetchedAt,
 		Source:        snap.Source,

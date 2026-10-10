@@ -141,11 +141,8 @@ func TestFrameFitsTheTerminal(t *testing.T) {
 		{"help", func() { m.mode = modeHelp }},
 		{"log", func() { m.mode = modeLog }},
 		{"confirm", func() { m.mode = modeConfirmDelete; m.deleteHold = m.selected() }},
-		{"picker", func() {
-			items := []pickerItem{{key: "w1:p1", label: "qodercli-1", hint: "working │ x"}}
-			m.mode = modeTargetPicker
-			m.picker = picker{title: "target pane", step: 1, itemsAll: items, items: items}
-		}},
+		{"target tree", func() { m.openTargetPicker(context.Background(), m.selected()) }},
+		{"filter tree", func() { m.openWorkspaceFilter() }},
 	} {
 		tc.prepare()
 		view := m.View()

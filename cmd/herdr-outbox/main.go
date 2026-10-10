@@ -186,7 +186,7 @@ func resolveDir(flagDir string) (string, error) {
 func buildBackend(opts globalOptions) (herdr.Backend, error) {
 	if opts.DryRun {
 		fake := herdr.NewFake()
-		fake.AddPane(herdr.Pane{ID: "w1:p1", WorkspaceID: "w1", Agent: "qodercli",
+		fake.AddPane(herdr.Pane{ID: "w1:p1", WorkspaceID: "w1", TabID: "w1:t1", Agent: "qodercli",
 			AgentStatus: herdr.StatusIdle, Cwd: cwdOrEmpty()})
 		fake.Workspaces = []herdr.Workspace{{ID: "w1", Label: "dryrun", Focused: true}}
 		fake.Panes[0].Focused = true
@@ -694,6 +694,11 @@ func printWorkspacesAndPanes(snap *herdr.Snapshot) {
 		}
 		fmt.Printf("  %-14s %s%s\n", w.ID, w.Display(), focus)
 	}
+	// The tab column is the level the TUI tree groups panes by.
+	tabLabels := make(map[string]string, len(snap.Tabs))
+	for _, t := range snap.Tabs {
+		tabLabels[t.ID] = t.Display()
+	}
 	for _, p := range snap.Panes {
 		agent := p.Agent
 		if agent == "" {
@@ -707,7 +712,11 @@ func printWorkspacesAndPanes(snap *herdr.Snapshot) {
 		if name == "" {
 			name = "-"
 		}
-		fmt.Printf("    %-10s %-12s %-10s %-8s %s\n", p.ID, name, agent, status, truncate(p.Title(), 44))
+		tab := truncate(tabLabels[p.TabID], 18)
+		if tab == "" {
+			tab = "-"
+		}
+		fmt.Printf("    %-9s %-19s %-10s %-10s %-8s %s\n", p.ID, tab, name, agent, status, truncate(p.Title(), 40))
 	}
 }
 
@@ -730,7 +739,7 @@ func runDoctor(dir string, opts globalOptions) error {
 	if err != nil {
 		return fmt.Errorf("快照失败: %w", err)
 	}
-	fmt.Printf("herdr:    %d 个工作区, %d 个面板\n", len(snap.Workspaces), len(snap.Panes))
+	fmt.Printf("herdr:    %d 个工作区, %d 个标签, %d 个面板\n", len(snap.Workspaces), len(snap.Tabs), len(snap.Panes))
 	if snap.AgentSeqError != "" {
 		// No state_change_seq means no completion can ever be detected, which is the
 		// first thing a stuck after_completion message needs explained.

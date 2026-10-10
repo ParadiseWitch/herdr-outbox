@@ -174,6 +174,18 @@ func (c *CLI) Snapshot(ctx context.Context) (*Snapshot, error) {
 		return nil, err
 	}
 
+	// `tab list` only feeds the tab level of the tree. Older herdr builds may not
+	// have it, and Build derives tabs from the panes anyway, so a failure here is
+	// not worth surfacing.
+	var tabs []Tab
+	if tabRaw, terr := c.call(ctx, c.ReadTimeout, "tab", "list"); terr == nil {
+		var ts struct {
+			Tabs []Tab `json:"tabs"`
+		}
+		if uerr := json.Unmarshal(tabRaw, &ts); uerr == nil {
+			tabs = ts.Tabs
+		}
+	}
 	paneRaw, err := c.call(ctx, c.ReadTimeout, "pane", "list")
 	if err != nil {
 		return nil, err
@@ -205,7 +217,7 @@ func (c *CLI) Snapshot(ctx context.Context) (*Snapshot, error) {
 		}
 	}
 
-	snap := Build(ws.Workspaces, ps.Panes, agents)
+	snap := Build(ws.Workspaces, tabs, ps.Panes, agents)
 	if aerr != nil {
 		snap.AgentSeqError = aerr.Error()
 	}
