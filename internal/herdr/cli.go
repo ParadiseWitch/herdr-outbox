@@ -97,21 +97,31 @@ func (c *CLI) call(ctx context.Context, timeout time.Duration, args ...string) (
 		}
 		return nil, &CLIError{Code: code, Message: msg}
 	}
-	if len(bytes.TrimSpace(stdout.Bytes())) == 0 {
+	return unwrapResponse(bytes.TrimSpace(stdout.Bytes()), args)
+}
+
+// unwrapResponse strips the `{"id":…,"result":…}` envelope herdr prints. Most
+// commands use it; `session list --json` is the exception and answers with its
+// payload bare, so the envelope is detected by shape rather than assumed. Reading
+// the roster as an envelope is what made every session collapse into one: the
+// unwrap failed, the caller fell back to the ambient session, and nothing said so.
+func unwrapResponse(body []byte, args []string) (json.RawMessage, error) {
+	if len(body) == 0 {
 		// `pane run` confirms with its exit status alone and prints no envelope.
 		return nil, nil
 	}
-	var envelope struct {
-		ID     string          `json:"id"`
-		Result json.RawMessage `json:"result"`
+	var shape map[string]json.RawMessage
+	if err := json.Unmarshal(body, &shape); err != nil {
+		return nil, fmt.Errorf("herdr %s: unparseable response: %w", strings.Join(args, " "), err)
 	}
-	if uerr := json.Unmarshal(stdout.Bytes(), &envelope); uerr != nil {
-		return nil, fmt.Errorf("herdr %s: unparseable response: %w", strings.Join(args, " "), uerr)
+	if result, ok := shape["result"]; ok {
+		return result, nil
 	}
-	if len(envelope.Result) == 0 {
+	if _, ok := shape["id"]; ok {
+		// An envelope with no result: herdr answered, but there was nothing in it.
 		return nil, &CLIError{Code: "empty_result", Message: "herdr returned no result"}
 	}
-	return envelope.Result, nil
+	return body, nil
 }
 
 func parseCLIError(blobs ...[]byte) (string, string) {
@@ -162,7 +172,67 @@ func (c *CLI) Probe(ctx context.Context) error {
 	return err
 }
 
+// Snapshot reads this CLI's session. `api snapshot` answers the whole topology —
+// workspaces, tabs, panes, agents and the session's focused pane — in one call,
+// replacing four subprocess round-trips. Older herdr builds without it fall back
+// to the individual lists.
 func (c *CLI) Snapshot(ctx context.Context) (*Snapshot, error) {
+	return c.snapshotSession(ctx, c.Session)
+}
+
+func (c *CLI) snapshotSession(ctx context.Context, session string) (*Snapshot, error) {
+	// A pointer distinguishes "this herdr answers api snapshot with the shape we
+	// expect" from "it answered something else", so a legitimately empty session
+	// (all workspaces closed) is not mistaken for an unsupported command.
+	if raw, err := c.call(ctx, c.ReadTimeout, "api", "snapshot"); err == nil {
+		var env struct {
+			Snapshot *struct {
+				Workspaces    []Workspace `json:"workspaces"`
+				Tabs          []Tab       `json:"tabs"`
+				Panes         []Pane      `json:"panes"`
+				Agents        []Pane      `json:"agents"`
+				FocusedPaneID string      `json:"focused_pane_id"`
+			} `json:"snapshot"`
+		}
+		if uerr := json.Unmarshal(raw, &env); uerr == nil && env.Snapshot != nil {
+			s := env.Snapshot
+			snap := BuildSession(session, s.Workspaces, s.Tabs, s.Panes, s.Agents)
+			// Primary is set before stampSeq, which keys its note by session.
+			snap.Primary = session
+			c.stampSeq(snap, s.Agents, s.Panes)
+			entry := Session{Name: session, Running: true, FocusedPane: s.FocusedPaneID}
+			snap.Sessions = []Session{entry}
+			snap.Source = c.Bin
+			return snap, nil
+		}
+	}
+	return c.snapshotLists(ctx, session)
+}
+
+// stampSeq records why a session cannot supply state_change_seq. agents is the
+// only read that carries it, and an empty agents list simply means the session
+// hosts no agents — not a failure: the per-pane check already tells the user a
+// pane has nothing to wait on.
+func (c *CLI) stampSeq(snap *Snapshot, agents, panes []Pane) {
+	seq := func(ps []Pane) bool {
+		for _, p := range ps {
+			if p.StateChangeSeq != 0 {
+				return true
+			}
+		}
+		return false
+	}
+	if len(agents) == 0 || seq(agents) || seq(panes) {
+		return
+	}
+	if snap.SeqUnavailable == nil {
+		snap.SeqUnavailable = map[string]string{}
+	}
+	snap.SeqUnavailable[snap.Primary] = "herdr 未返回代理状态序号"
+}
+
+// snapshotLists is the pre-`api snapshot` path: four reads, no focus field.
+func (c *CLI) snapshotLists(ctx context.Context, session string) (*Snapshot, error) {
 	wsRaw, err := c.call(ctx, c.ReadTimeout, "workspace", "list")
 	if err != nil {
 		return nil, err
@@ -174,9 +244,8 @@ func (c *CLI) Snapshot(ctx context.Context) (*Snapshot, error) {
 		return nil, err
 	}
 
-	// `tab list` only feeds the tab level of the tree. Older herdr builds may not
-	// have it, and Build derives tabs from the panes anyway, so a failure here is
-	// not worth surfacing.
+	// `tab list` only feeds the tab level of the tree; Build derives tabs from
+	// the panes when it is missing, so a failure here is not worth surfacing.
 	var tabs []Tab
 	if tabRaw, terr := c.call(ctx, c.ReadTimeout, "tab", "list"); terr == nil {
 		var ts struct {
@@ -197,8 +266,8 @@ func (c *CLI) Snapshot(ctx context.Context) (*Snapshot, error) {
 		return nil, err
 	}
 
-	// agent list is the only read carrying state_change_seq, which is what proves a
-	// completion actually happened. Older herdr versions may not expose it, so a
+	// agent list is the only read carrying state_change_seq, which is what proves
+	// a completion actually happened. Older herdr versions may not expose it, so a
 	// failure here is not fatal — but it has to be visible, or every armed message
 	// silently waits for an edge that can never arrive.
 	var agents []Pane
@@ -210,16 +279,20 @@ func (c *CLI) Snapshot(ctx context.Context) (*Snapshot, error) {
 		var as struct {
 			Agents []Pane `json:"agents"`
 		}
-		if uerr := json.Unmarshal(agentRaw, &as); uerr != nil {
-			aerr = fmt.Errorf("agent list: %w", uerr)
-		} else {
+		if uerr := json.Unmarshal(agentRaw, &as); uerr == nil {
 			agents = as.Agents
+		} else {
+			aerr = fmt.Errorf("agent list: %w", uerr)
 		}
 	}
 
-	snap := Build(ws.Workspaces, tabs, ps.Panes, agents)
+	snap := BuildSession(session, ws.Workspaces, tabs, ps.Panes, agents)
+	snap.Primary = session
+	snap.Sessions = []Session{{Name: session, Running: true}}
 	if aerr != nil {
-		snap.AgentSeqError = aerr.Error()
+		snap.SeqUnavailable = map[string]string{session: aerr.Error()}
+	} else {
+		c.stampSeq(snap, agents, ps.Panes)
 	}
 	snap.Source = c.Bin
 	return snap, nil

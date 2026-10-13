@@ -212,6 +212,41 @@ func TestParseCLIErrorFromStderrEnvelope(t *testing.T) {
 	}
 }
 
+// `session list --json` is the one command with no `{"id","result"}` envelope.
+// Reading it as one produced empty_result, the caller fell back to the ambient
+// session, and every other herdr session vanished from the tree without an error.
+func TestUnwrapAcceptsBarePayload(t *testing.T) {
+	bare := []byte(`{"sessions":[{"name":"default","running":true}]}`)
+	raw, err := unwrapResponse(bare, []string{"session", "list"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(raw) != string(bare) {
+		t.Fatalf("bare payload rewritten: %s", raw)
+	}
+
+	enveloped := []byte(`{"id":"cli:workspace:list","result":{"workspaces":[]}}`)
+	raw, err = unwrapResponse(enveloped, []string{"workspace", "list"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(raw) != `{"workspaces":[]}` {
+		t.Fatalf("envelope not stripped: %s", raw)
+	}
+
+	// An envelope with nothing in it is herdr's answer, not a read failure: it has
+	// to stay distinguishable from a bare payload, which is always data.
+	if _, err := unwrapResponse([]byte(`{"id":"cli:pane:run"}`), nil); err == nil {
+		t.Fatal("an envelope without a result read as success")
+	}
+	if raw, err := unwrapResponse(nil, []string{"pane", "run"}); raw != nil || err != nil {
+		t.Fatalf("empty stdout = %q, %v; want a silent success", raw, err)
+	}
+	if _, err := unwrapResponse([]byte("not json"), nil); err == nil {
+		t.Fatal("unparseable output read as a bare payload")
+	}
+}
+
 func TestSettledOnlyCoversIdleAndDone(t *testing.T) {
 	for _, s := range []string{StatusIdle, StatusDone} {
 		if !Settled(s) {
