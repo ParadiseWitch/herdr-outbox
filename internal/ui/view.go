@@ -189,7 +189,7 @@ func (m *Model) listView(width, height int) string {
 			// difference between "no messages" and "no messages here". The header
 			// already names the scope, so this row only carries the way out.
 			empty = "  当前作用域内没有消息"
-			hint = "  \\  显示全部"
+			hint = "  c  显示全部"
 		case m.filter.Status == filterCurrent && m.currentPane == "":
 			empty = "  未在 herdr 面板内运行"
 			hint = "  无法确定当前面板"
@@ -729,13 +729,13 @@ func (m *Model) helpView(width int) string {
 		{"j k g G", "移动 · 跳转"},
 		{"tab h l ←→", "切换标签页"},
 		{"1-4", "全部/当前/未发送/已发送"},
-		{"\\", "清除筛选，显示所有会话的全部消息"},
+		{"c", "清除筛选，显示所有会话的全部消息"},
 		{"s", "立即发送"},
 		{"t", "选择触发方式（手动、完成后、定时）"},
 		{"p", "在会话/工作区/标签/面板四级树里选择目标面板"},
 		{"u", "暂存为草稿（不发送）"},
-		{"f c d", "收藏 · 克隆 · 删除"},
-		{"x", "筛选会话/工作区/标签/面板（多选，整组可一次选中）"},
+		{"f y d", "收藏 · 克隆 · 删除"},
+		{"x", "打开筛选树：会话/工作区/标签/面板（多选，整组可一次选中）"},
 		{"/", "搜索消息（标题、内容、目标）"},
 		{"r R", "刷新 herdr 状态 · 执行一次调度"},
 		{"L", "调度日志"},

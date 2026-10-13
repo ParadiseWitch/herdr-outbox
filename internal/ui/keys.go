@@ -133,7 +133,7 @@ func (m *Model) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.openWorkspaceFilter()
 		return m, nil
 
-	case "\\":
+	case "c":
 		m.clearScope()
 		return m, nil
 
@@ -159,7 +159,7 @@ func (m *Model) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		return m.openEditor(sel.ID)
-	case "c":
+	case "y":
 		if sel != nil {
 			return m.cloneMessage(sel)
 		}

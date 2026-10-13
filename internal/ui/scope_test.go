@@ -148,7 +148,7 @@ func TestClearScopeRevealsEverySession(t *testing.T) {
 	put(t, m, "笔记消息", at("note"))
 	m.reload(t)
 
-	pressRune(t, m, '\\')
+	pressRune(t, m, 'c')
 
 	if got := len(m.visible()); got != 2 {
 		t.Fatalf("after clearing: %d messages, want both", got)
