@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -126,6 +127,7 @@ func (c *Client) SetTrigger(ctx context.Context, id string, kind model.TriggerKi
 
 func (c *Client) SetTarget(ctx context.Context, id string, target model.Target) (*model.Message, error) {
 	req := api.TargetRequest{Target: api.Target{
+		Session:        target.Session,
 		Workspace:      target.Workspace,
 		WorkspaceLabel: target.WorkspaceLabel,
 		Pane:           target.Pane,
@@ -179,7 +181,14 @@ func (c *Client) ReadPane(ctx context.Context, paneID string, lines int) (string
 	var resp struct {
 		Content string `json:"content"`
 	}
-	if err := c.get(ctx, fmt.Sprintf("/api/panes/%s/read?lines=%d", paneID, lines), &resp); err != nil {
+	// A qualified id cannot go in the path: the slash would be read as another
+	// segment, so the session travels as a query parameter.
+	session, bare := herdr.SplitQualified(paneID)
+	path := fmt.Sprintf("/api/panes/%s/read?lines=%d", url.PathEscape(bare), lines)
+	if session != "" {
+		path += "&session=" + url.QueryEscape(session)
+	}
+	if err := c.get(ctx, path, &resp); err != nil {
 		return "", err
 	}
 	return resp.Content, nil
@@ -340,6 +349,7 @@ func toAPIMessage(m *model.Message) api.Message {
 
 func toAPITarget(t model.Target) api.Target {
 	return api.Target{
+		Session:        t.Session,
 		Workspace:      t.Workspace,
 		WorkspaceLabel: t.WorkspaceLabel,
 		Pane:           t.Pane,
@@ -380,6 +390,7 @@ func fromAPIMessage(a *api.Message) *model.Message {
 
 func fromAPITarget(t api.Target) model.Target {
 	return model.Target{
+		Session:        t.Session,
 		Workspace:      t.Workspace,
 		WorkspaceLabel: t.WorkspaceLabel,
 		Pane:           t.Pane,
@@ -411,6 +422,7 @@ func fromAPISnapshot(resp *api.SnapshotResponse) *herdr.Snapshot {
 	ws := make([]herdr.Workspace, len(resp.Workspaces))
 	for i, w := range resp.Workspaces {
 		ws[i] = herdr.Workspace{
+			Session:     w.Session,
 			ID:          w.ID,
 			Label:       w.Label,
 			Number:      w.Number,
@@ -424,6 +436,7 @@ func fromAPISnapshot(resp *api.SnapshotResponse) *herdr.Snapshot {
 	tabs := make([]herdr.Tab, len(resp.Tabs))
 	for i, t := range resp.Tabs {
 		tabs[i] = herdr.Tab{
+			Session:     t.Session,
 			ID:          t.ID,
 			WorkspaceID: t.WorkspaceID,
 			Label:       t.Label,
@@ -437,6 +450,7 @@ func fromAPISnapshot(resp *api.SnapshotResponse) *herdr.Snapshot {
 	panes := make([]herdr.Pane, len(resp.Panes))
 	for i, p := range resp.Panes {
 		panes[i] = herdr.Pane{
+			Session:        p.Session,
 			ID:             p.ID,
 			WorkspaceID:    p.WorkspaceID,
 			TabID:          p.TabID,
@@ -449,12 +463,25 @@ func fromAPISnapshot(resp *api.SnapshotResponse) *herdr.Snapshot {
 			WsLabel:        p.WsLabel,
 		}
 	}
+	sessions := make([]herdr.Session, len(resp.Sessions))
+	for i, s := range resp.Sessions {
+		sessions[i] = herdr.Session{
+			Name:        s.Name,
+			Running:     s.Running,
+			Socket:      s.Socket,
+			Default:     s.Default,
+			FocusedPane: s.FocusedPane,
+			Err:         s.Err,
+		}
+	}
 	return &herdr.Snapshot{
-		Workspaces:    ws,
-		Tabs:          tabs,
-		Panes:         panes,
-		FetchedAt:     resp.FetchedAt,
-		Source:        resp.Source,
-		AgentSeqError: resp.AgentSeqError,
+		Workspaces:     ws,
+		Tabs:           tabs,
+		Panes:          panes,
+		Sessions:       sessions,
+		Primary:        resp.Primary,
+		FetchedAt:      resp.FetchedAt,
+		Source:         resp.Source,
+		SeqUnavailable: resp.SeqUnavailable,
 	}
 }

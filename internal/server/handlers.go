@@ -203,6 +203,7 @@ func (s *Server) handleSetTarget(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	t := model.Target{
+		Session:        req.Target.Session,
 		Workspace:      req.Target.Workspace,
 		WorkspaceLabel: req.Target.WorkspaceLabel,
 		Pane:           req.Target.Pane,
@@ -303,7 +304,9 @@ func (s *Server) handleServerStop(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleReadPane(w http.ResponseWriter, r *http.Request) {
-	paneID := r.PathValue("id")
+	// The session is a query parameter, not part of the path: a qualified pane id
+	// carries a slash, and the mux unescapes %2F before matching {id}.
+	paneID := herdr.Qualify(r.URL.Query().Get("session"), r.PathValue("id"))
 	lines := 20
 	if n := r.URL.Query().Get("lines"); n != "" {
 		if v, err := strconv.Atoi(n); err == nil && v > 0 {
@@ -350,6 +353,7 @@ func toAPIMessage(m *model.Message) api.Message {
 
 func toAPITarget(t model.Target) api.Target {
 	return api.Target{
+		Session:        t.Session,
 		Workspace:      t.Workspace,
 		WorkspaceLabel: t.WorkspaceLabel,
 		Pane:           t.Pane,
@@ -381,6 +385,7 @@ func toAPISnapshot(snap *herdr.Snapshot) api.SnapshotResponse {
 	ws := make([]api.Workspace, len(snap.Workspaces))
 	for i, w := range snap.Workspaces {
 		ws[i] = api.Workspace{
+			Session:     w.Session,
 			ID:          w.ID,
 			Label:       w.Label,
 			Number:      w.Number,
@@ -394,6 +399,7 @@ func toAPISnapshot(snap *herdr.Snapshot) api.SnapshotResponse {
 	tabs := make([]api.Tab, len(snap.Tabs))
 	for i, t := range snap.Tabs {
 		tabs[i] = api.Tab{
+			Session:     t.Session,
 			ID:          t.ID,
 			WorkspaceID: t.WorkspaceID,
 			Label:       t.Label,
@@ -406,6 +412,7 @@ func toAPISnapshot(snap *herdr.Snapshot) api.SnapshotResponse {
 	panes := make([]api.Pane, len(snap.Panes))
 	for i, p := range snap.Panes {
 		panes[i] = api.Pane{
+			Session:        p.Session,
 			ID:             p.ID,
 			WorkspaceID:    p.WorkspaceID,
 			TabID:          p.TabID,
@@ -418,13 +425,26 @@ func toAPISnapshot(snap *herdr.Snapshot) api.SnapshotResponse {
 			WsLabel:        p.WsLabel,
 		}
 	}
+	sessions := make([]api.Session, len(snap.Sessions))
+	for i, s := range snap.Sessions {
+		sessions[i] = api.Session{
+			Name:        s.Name,
+			Running:     s.Running,
+			Socket:      s.Socket,
+			Default:     s.Default,
+			FocusedPane: s.FocusedPane,
+			Err:         s.Err,
+		}
+	}
 	return api.SnapshotResponse{
-		Workspaces:    ws,
-		Tabs:          tabs,
-		Panes:         panes,
-		FetchedAt:     snap.FetchedAt,
-		Source:        snap.Source,
-		AgentSeqError: snap.AgentSeqError,
+		Workspaces:     ws,
+		Tabs:           tabs,
+		Panes:          panes,
+		Sessions:       sessions,
+		Primary:        snap.Primary,
+		FetchedAt:      snap.FetchedAt,
+		Source:         snap.Source,
+		SeqUnavailable: snap.SeqUnavailable,
 	}
 }
 
@@ -453,6 +473,7 @@ func fromAPIMessage(a *api.Message) *model.Message {
 
 func fromAPITarget(t api.Target) model.Target {
 	return model.Target{
+		Session:        t.Session,
 		Workspace:      t.Workspace,
 		WorkspaceLabel: t.WorkspaceLabel,
 		Pane:           t.Pane,

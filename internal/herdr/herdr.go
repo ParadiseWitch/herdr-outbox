@@ -57,7 +57,44 @@ func StatusLabel(s string) string {
 	return s
 }
 
+// Session is one herdr server: its own workspace/tab/pane id namespace. IDs are
+// per-session counters, so `w1:p1` in one session is a different terminal than
+// `w1:p1` in another; anything that crosses sessions must be qualified.
+type Session struct {
+	Name    string `json:"name"`
+	Running bool   `json:"running"`
+	Socket  string `json:"socket_path"`
+	Default bool   `json:"default"`
+	// FocusedPane is this session's own focused pane, bare id. Each running
+	// session has one, so a merged snapshot cannot answer "the focused pane"
+	// without naming the session.
+	FocusedPane string `json:"focused_pane,omitempty"`
+	// Err is why this session could not be read this round. An armed message
+	// aimed at it must hold, not be marked failed or "target gone".
+	Err string `json:"err,omitempty"`
+}
+
+// SplitQualified reads `session/id`; the session name is a directory name, so it
+// never contains a slash and the pane id never does either: at most one.
+func SplitQualified(id string) (session, bare string) {
+	if i := strings.IndexByte(id, '/'); i >= 0 {
+		return id[:i], id[i+1:]
+	}
+	return "", id
+}
+
+// Qualify builds the `session/id` form of an id.
+func Qualify(session, id string) string {
+	if session == "" {
+		return id
+	}
+	return session + "/" + id
+}
+
 type Workspace struct {
+	// Session is stamped by the reader, not reported by herdr: pane and workspace
+	// ids only mean something inside one session.
+	Session     string `json:"-"`
 	ID          string `json:"workspace_id"`
 	Label       string `json:"label"`
 	Number      int    `json:"number"`
@@ -72,6 +109,7 @@ type Workspace struct {
 // reports the label; `tab list` is optional, so a missing label falls back to the
 // id suffix.
 type Tab struct {
+	Session     string `json:"-"`
 	ID          string `json:"tab_id"`
 	WorkspaceID string `json:"workspace_id"`
 	Label       string `json:"label"`
@@ -116,6 +154,8 @@ type AgentSession struct {
 
 // Pane is a herdr terminal, enriched with the agent occupying it, if any.
 type Pane struct {
+	// Session is stamped by the reader: pane ids are per-session counters.
+	Session            string        `json:"-"`
 	ID                 string        `json:"pane_id"`
 	WorkspaceID        string        `json:"workspace_id"`
 	TabID              string        `json:"tab_id"`
@@ -133,11 +173,13 @@ type Pane struct {
 
 	// Synthetic, filled in by Build: ordinal name such as qodercli-2 and the
 	// owning workspace label.
-	// Synthetic, filled in by Build: ordinal name such as qodercli-2 and the
-	// owning workspace label.
 	Ordinal string `json:"-"`
 	WsLabel string `json:"-"`
 }
+
+// QualifiedID is the `session/pane-id` form, the only pane identity that means
+// something across sessions.
+func (p Pane) QualifiedID() string { return Qualify(p.Session, p.ID) }
 
 func (p Pane) HasAgent() bool { return p.Agent != "" }
 
@@ -187,6 +229,9 @@ func (p Pane) Display() string {
 // show a name even while herdr is unreachable.
 func (p Pane) Target() model.Target {
 	return model.Target{
+		// Without the session, a pane picked in another session would be stored as
+		// an ambiguous id and later resolve against the primary session.
+		Session:        p.Session,
 		Workspace:      p.WorkspaceID,
 		WorkspaceLabel: p.WsLabel,
 		Pane:           p.ID,
@@ -202,22 +247,103 @@ func (p Pane) SessionID() string {
 	return p.AgentSession.Value
 }
 
-// Snapshot is one consistent-enough read of herdr runtime state.
+// Snapshot is one consistent-enough read of herdr runtime state. It can cover
+// several sessions: workspace/tab/pane ids are per-session counters, so ids are
+// only unique once qualified, and each running session has its own focused pane.
 type Snapshot struct {
 	Workspaces []Workspace
 	Tabs       []Tab
 	Panes      []Pane
-	FetchedAt  time.Time
-	Source     string
-	// AgentSeqError means the read that supplies state_change_seq failed. Pane
-	// status still looks usable because `pane list` carries it, but without a
-	// sequence there is no completion edge to detect.
-	AgentSeqError string `json:"agent_seq_error,omitempty"`
+	// Sessions is the roster, stopped sessions included, so the tree can show a
+	// greyed-out session whose messages still exist.
+	Sessions []Session
+	// Primary is the session an unqualified id belongs to. Empty means this
+	// snapshot covers one ambient session and every id is already unqualified.
+	Primary   string
+	FetchedAt time.Time
+	Source    string
+	// SeqUnavailable names the sessions whose state_change_seq read failed, keyed
+	// by session. Pane status still looks usable, but without a sequence there is
+	// no completion edge to detect — and a session that simply has no agents is
+	// not an error, so this cannot be one global flag.
+	SeqUnavailable map[string]string `json:"seq_unavailable,omitempty"`
 }
 
+// SessionOf names the session a target points at. Every message written before
+// multi-session support has an empty Target.Session, which means the primary
+// session; anything that keys or filters by session must resolve through this
+// instead of reading the raw field, or those messages would land in a session no
+// tree row names.
+func (s *Snapshot) SessionOf(t model.Target) string {
+	if t.Session != "" {
+		return t.Session
+	}
+	if s == nil {
+		return ""
+	}
+	return s.Primary
+}
+
+// QualifiedPane is the tree and filter key for a target: bare pane ids collide
+// across sessions, so the key always carries the session.
+func (s *Snapshot) QualifiedPane(t model.Target) string {
+	if t.Pane == "" {
+		return ""
+	}
+	return Qualify(s.SessionOf(t), t.Pane)
+}
+
+// MultiSession reports whether the roster names more than one session. Labels
+// carry a session prefix only then: with a single ambient session the prefix is
+// noise on every row, and there is nothing to disambiguate.
+func (s *Snapshot) MultiSession() bool {
+	return s != nil && len(s.Sessions) > 1
+}
+
+// FocusedIn returns the focused pane of one session. Snapshot.Focused would have
+// to guess: with several running sessions each carrying a focused pane, "the
+// first one" is decided by iteration order.
+func (s *Snapshot) FocusedIn(session string) (Pane, bool) {
+	if s == nil {
+		return Pane{}, false
+	}
+	for _, p := range s.Panes {
+		if p.Session == session && p.Focused {
+			return p, true
+		}
+	}
+	return Pane{}, false
+}
+
+// Focused returns the primary session's focused pane.
+func (s *Snapshot) Focused() (Pane, bool) {
+	if s == nil {
+		return Pane{}, false
+	}
+	return s.FocusedIn(s.Primary)
+}
+
+// SeqError reports why session `session` cannot supply state_change_seq.
+func (s *Snapshot) SeqError(session string) string {
+	if s == nil || s.SeqUnavailable == nil {
+		return ""
+	}
+	return s.SeqUnavailable[session]
+}
+
+// Build reads one session's topology. The session name is stamped on every
+// entity because ids are per-session counters: a merged snapshot built by
+// concatenating these results keeps id lookups from crossing sessions.
 func Build(workspaces []Workspace, tabs []Tab, panes []Pane, agents []Pane) *Snapshot {
+	return BuildSession("", workspaces, tabs, panes, agents)
+}
+
+func BuildSession(session string, workspaces []Workspace, tabs []Tab, panes []Pane, agents []Pane) *Snapshot {
 	out := make([]Pane, len(panes))
-	copy(out, panes)
+	for i, p := range panes {
+		p.Session = session
+		out[i] = p
+	}
 	index := make(map[string]int, len(out))
 	for i, p := range out {
 		index[p.ID] = i
@@ -244,8 +370,9 @@ func Build(workspaces []Workspace, tabs []Tab, panes []Pane, agents []Pane) *Sna
 		out[i].Focused = out[i].Focused || a.Focused
 	}
 	wsLabels := make(map[string]string, len(workspaces))
-	for _, w := range workspaces {
-		wsLabels[w.ID] = w.Display()
+	for i := range workspaces {
+		workspaces[i].Session = session
+		wsLabels[workspaces[i].ID] = workspaces[i].Display()
 	}
 	sort.SliceStable(out, func(i, j int) bool {
 		a, b := out[i], out[j]
@@ -289,8 +416,7 @@ func Build(workspaces []Workspace, tabs []Tab, panes []Pane, agents []Pane) *Sna
 			ordered[i].PaneCount++
 			continue
 		}
-
-		t := Tab{ID: p.TabID, WorkspaceID: p.WorkspaceID, PaneCount: 1}
+		t := Tab{Session: session, ID: p.TabID, WorkspaceID: p.WorkspaceID, PaneCount: 1}
 		if m, ok := meta[p.TabID]; ok {
 			if m.Label != "" {
 				t.Label = m.Label
@@ -339,80 +465,94 @@ func TabSortKey(id string) int {
 	return numericTail(id, 't')
 }
 
+// Pane finds a pane by id. The id may be qualified (`app/w1:p1`) or bare, in
+// which case it is looked up in the primary session: pane ids are per-session
+// counters, so an unqualified id must never match another session's pane.
 func (s *Snapshot) Pane(id string) (Pane, bool) {
 	if s == nil {
 		return Pane{}, false
 	}
+	session, bare := SplitQualified(id)
+	if session == "" {
+		session = s.Primary
+	}
 	for _, p := range s.Panes {
-		if p.ID == id {
+		if p.ID == bare && p.Session == session {
 			return p, true
 		}
 	}
 	return Pane{}, false
 }
 
+// Workspace finds a workspace by id, qualified or bare-in-primary.
 func (s *Snapshot) Workspace(id string) (Workspace, bool) {
 	if s == nil {
 		return Workspace{}, false
 	}
+	session, bare := SplitQualified(id)
+	if session == "" {
+		session = s.Primary
+	}
 	for _, w := range s.Workspaces {
-		if w.ID == id {
+		if w.ID == bare && w.Session == session {
 			return w, true
 		}
 	}
 	return Workspace{}, false
 }
 
-// Focused returns the pane herdr reports as focused. Exactly one pane carries
-// this flag, and a popup is not a pane in this list: opening one leaves the
-// focused pane of the underlying layout untouched, so this is the pane the user
-// was in before the popup took the keyboard.
-func (s *Snapshot) Focused() (Pane, bool) {
-	if s == nil {
-		return Pane{}, false
-	}
-	for _, p := range s.Panes {
-		if p.Focused {
-			return p, true
-		}
-	}
-	return Pane{}, false
-}
-
-// Tab finds a tab by id so the tree can label the middle level.
+// Tab finds a tab by id, qualified or bare-in-primary, so the tree can label the
+// middle level without mixing two sessions' `w1:t1`.
 func (s *Snapshot) Tab(id string) (Tab, bool) {
 	if s == nil || id == "" {
 		return Tab{}, false
 	}
+	session, bare := SplitQualified(id)
+	if session == "" {
+		session = s.Primary
+	}
 	for _, t := range s.Tabs {
-		if t.ID == id {
+		if t.ID == bare && t.Session == session {
 			return t, true
 		}
 	}
 	return Tab{}, false
 }
 
-// Resolve maps a stored target onto a live pane. It prefers the pane id and falls
-// back to herdr labels and the synthetic agentkind-N name so hand written targets
-// like `pane: qoder-2` keep working.
+// Resolve maps a stored target onto a live pane. The pane id may be qualified
+// (`app/w1:p1`); an unqualified target belongs to the primary session, because
+// pane ids are per-session counters and matching across sessions would deliver a
+// message into a different terminal that happens to share the id. Label and
+// ordinal fallbacks stay inside the resolved session too.
 func (s *Snapshot) Resolve(t model.Target) (Pane, bool) {
 	if s == nil {
 		return Pane{}, false
 	}
+	session, paneID := SplitQualified(t.Pane)
+	if t.Session != "" {
+		session = t.Session
+	}
+	if session == "" {
+		session = s.Primary
+	}
+	_, wsID := SplitQualified(t.Workspace)
 	wsMatch := func(p Pane) bool {
-		if t.Workspace == "" {
+		if p.Session != session {
+			return false
+		}
+		if wsID == "" {
 			return true
 		}
-		return p.WorkspaceID == t.Workspace || strings.EqualFold(p.WsLabel, t.Workspace)
+		return p.WorkspaceID == wsID || strings.EqualFold(p.WsLabel, wsID)
 	}
-	if t.Pane != "" {
+	if paneID != "" {
 		for _, p := range s.Panes {
-			if p.ID == t.Pane && wsMatch(p) {
+			if p.ID == paneID && wsMatch(p) {
 				return p, true
 			}
 		}
 		for _, p := range s.Panes {
-			if strings.EqualFold(p.ID, t.Pane) && wsMatch(p) {
+			if strings.EqualFold(p.ID, paneID) && wsMatch(p) {
 				return p, true
 			}
 		}
@@ -420,15 +560,14 @@ func (s *Snapshot) Resolve(t model.Target) (Pane, bool) {
 			if !wsMatch(p) {
 				continue
 			}
-			key := t.Pane
 			if i := strings.LastIndex(p.ID, ":"); i >= 0 {
-				if strings.EqualFold(p.ID[i+1:], key) {
+				if strings.EqualFold(p.ID[i+1:], paneID) {
 					return p, true
 				}
 			}
 		}
 	}
-	name := t.Pane
+	name := paneID
 	if name == "" {
 		name = t.PaneLabel
 	}
@@ -457,7 +596,7 @@ func (s *Snapshot) Resolve(t model.Target) (Pane, bool) {
 			}
 		}
 	}
-	if t.Pane == "" && t.PaneLabel == "" && t.Workspace != "" {
+	if paneID == "" && t.PaneLabel == "" && wsID != "" {
 		for _, p := range s.Panes {
 			if wsMatch(p) && p.Focused {
 				return p, true

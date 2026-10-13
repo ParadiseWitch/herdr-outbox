@@ -26,6 +26,9 @@ type Message struct {
 }
 
 type Target struct {
+	// Session qualifies the pane: ids are per-session counters, so `w1:p1` in one
+	// session is a different terminal than `w1:p1` in another.
+	Session        string `json:"session,omitempty"`
 	Workspace      string `json:"workspace,omitempty"`
 	WorkspaceLabel string `json:"workspace_label,omitempty"`
 	Pane           string `json:"pane,omitempty"`
@@ -43,14 +46,34 @@ type SnapshotResponse struct {
 	Workspaces []Workspace `json:"workspaces"`
 	Tabs       []Tab       `json:"tabs"`
 	Panes      []Pane      `json:"panes"`
-	FetchedAt  time.Time   `json:"fetched_at"`
-	Source     string      `json:"source"`
-	// AgentSeqError means herdr could not supply state_change_seq, so completion
-	// triggers cannot be evaluated. Empty when the read succeeded.
-	AgentSeqError string `json:"agent_seq_error,omitempty"`
+	// Sessions is the roster of every herdr session this snapshot covers,
+	// stopped ones included, so a remote TUI can build the same four-level tree.
+	Sessions []Session `json:"sessions"`
+	// Primary is the session unqualified ids belong to.
+	Primary   string    `json:"primary,omitempty"`
+	FetchedAt time.Time `json:"fetched_at"`
+	Source    string    `json:"source"`
+	// SeqUnavailable maps a session to the reason its state_change_seq read
+	// failed. Keyed per session: one session hosting no agents is not an outage
+	// for the others.
+	SeqUnavailable map[string]string `json:"seq_unavailable,omitempty"`
+}
+
+// Session mirrors herdr's own session roster entry.
+type Session struct {
+	Name    string `json:"name"`
+	Running bool   `json:"running"`
+	Socket  string `json:"socket_path,omitempty"`
+	Default bool   `json:"default,omitempty"`
+	// FocusedPane is this session's focused pane, bare id. Each running session
+	// has one, so "the focused pane" is only meaningful with a session named.
+	FocusedPane string `json:"focused_pane,omitempty"`
+	// Err is why the session could not be read this round.
+	Err string `json:"err,omitempty"`
 }
 
 type Workspace struct {
+	Session     string `json:"session,omitempty"`
 	ID          string `json:"workspace_id"`
 	Label       string `json:"label"`
 	Number      int    `json:"number"`
@@ -63,6 +86,7 @@ type Workspace struct {
 
 // Tab is the level between a workspace and its panes in the herdr tree.
 type Tab struct {
+	Session     string `json:"session,omitempty"`
 	ID          string `json:"tab_id"`
 	WorkspaceID string `json:"workspace_id"`
 	Label       string `json:"label"`
@@ -73,6 +97,7 @@ type Tab struct {
 }
 
 type Pane struct {
+	Session        string `json:"session,omitempty"`
 	ID             string `json:"pane_id"`
 	WorkspaceID    string `json:"workspace_id"`
 	TabID          string `json:"tab_id"`

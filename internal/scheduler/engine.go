@@ -170,6 +170,69 @@ func (e *Engine) Step(ctx context.Context) ([]Event, error) {
 	return events, nil
 }
 
+// How a message's target session can be unavailable this round.
+const (
+	// holdUnreadable is transient: herdr did not answer. Nothing is written and
+	// nothing is failed, because a read failure is not a delivery failure.
+	holdUnreadable = "unreadable"
+	// holdStopped is durable: the session exists in the roster but is not running,
+	// so its panes cannot receive anything until the user starts it again.
+	holdStopped = "stopped"
+)
+
+// targetSession names the session a message aims at and reports why it cannot be
+// acted on now. An empty target session is the primary session, which is what
+// every message written before multi-session support meant.
+func (e *Engine) targetSession(t model.Target, snap *herdr.Snapshot) (string, string) {
+	if snap == nil {
+		return "", ""
+	}
+	session, _ := herdr.SplitQualified(t.Pane)
+	if t.Session != "" {
+		session = t.Session
+	}
+	if session == "" {
+		session = snap.Primary
+	}
+	if session == "" {
+		return "", ""
+	}
+	for _, s := range snap.Sessions {
+		if s.Name != session {
+			continue
+		}
+		if s.Err != "" {
+			return session, holdUnreadable
+		}
+		if !s.Running {
+			return session, holdStopped
+		}
+		return session, ""
+	}
+	return session, ""
+}
+
+// sessionHold reports whether a message must not be acted on this round, plus the
+// event saying so. An unreadable session holds silently: a read failure is
+// transient, and parking or failing would turn "herdr did not answer" into a
+// delivery verdict. A stopped session is reported, because nothing can be
+// delivered there until the user starts it again.
+func (e *Engine) sessionHold(m *model.Message, snap *herdr.Snapshot, now time.Time) ([]Event, bool) {
+	session, hold := e.targetSession(m.Target, snap)
+	switch hold {
+	case holdUnreadable:
+		return nil, true
+	case holdStopped:
+		// park records the reason once and stays quiet, so a stopped session does
+		// not emit one event per tick.
+		evs, err := e.park(m, herdr.Pane{}, now,
+			"herdr 会话 "+session+" 未运行；启动该会话后才能发送", EventDeferred)
+		return evs, err == nil
+	default:
+		return nil, false
+	}
+}
+
 func needsHerdr(msgs []*model.Message) bool {
 	for _, m := range msgs {
 		switch m.Status {
@@ -191,6 +254,9 @@ func (e *Engine) advance(ctx context.Context, m *model.Message, snap *herdr.Snap
 		if now.Before(*m.Trigger.SendAt) {
 			return nil, nil
 		}
+		if evs, held := e.sessionHold(m, snap, now); held {
+			return evs, nil
+		}
 		ev, err := e.dispatchLocked(ctx, m, snap, "scheduled", false)
 		return ev, err
 	case model.StatusWaiting:
@@ -207,13 +273,19 @@ func (e *Engine) advance(ctx context.Context, m *model.Message, snap *herdr.Snap
 // missed poll, ignores a pane that was already idle, and cannot re-fire because the
 // sequence does not move again until the agent does new work.
 func (e *Engine) advanceCompletion(ctx context.Context, m *model.Message, snap *herdr.Snapshot, now time.Time) ([]Event, error) {
+	// A session that could not be read this round is not a disappeared pane and a
+	// stopped one is not a dead target: the message holds or is parked with the
+	// session reason instead.
+	if evs, held := e.sessionHold(m, snap, now); held {
+		return evs, nil
+	}
 	pane, ok := snap.Resolve(m.Target)
 	if !ok {
 		return e.park(m, pane, now, "目标面板已消失；按 p 重新选择", EventDeferred)
 	}
 	e.bindTarget(m, pane)
 
-	if snap.AgentSeqError != "" {
+	if seq := snap.SeqError(pane.Session); seq != "" {
 		return e.park(m, pane, now, "herdr 未返回代理状态序号，无法判断是否完成；消息保持等待", EventDeferred)
 	}
 
@@ -316,6 +388,10 @@ func orNone(s string) string {
 // bindTarget caches what the resolved pane looks like so the list can show a live
 // name instead of a bare pane id.
 func (e *Engine) bindTarget(m *model.Message, pane herdr.Pane) {
+	// The session is part of the address: two sessions can both own `w1:p1`, so a
+	// target that never names one would resolve into whichever session happens to
+	// be primary. Writing it back is how old single-session records converge.
+	m.Target.Session = pane.Session
 	m.Target.Pane = pane.ID
 	if pane.WsLabel != "" {
 		m.Target.WorkspaceLabel = pane.WsLabel
@@ -354,8 +430,11 @@ func (e *Engine) armFrom(m *model.Message, snap *herdr.Snapshot) (*herdr.Pane, e
 	}
 	e.bindTarget(m, pane)
 	if m.Trigger.Kind == model.TriggerAfterCompletion {
-		if snap.AgentSeqError != "" {
-			return &pane, fmt.Errorf("herdr 未返回代理状态序号，无法判断完成；请先用 s 发送，或运行 `herdr-outbox doctor` 检查")
+		// Keyed by the pane's own session: a session whose seq read failed, or one
+		// that simply hosts no agents, is not a whole-herdr outage.
+		if seq := snap.SeqError(pane.Session); seq != "" {
+			return &pane, fmt.Errorf("%s 所属会话无法给出代理状态序号（%s），无法判断完成；请先用 s 发送",
+				pane.Display(), seq)
 		}
 		if !pane.Trackable() {
 			return &pane, fmt.Errorf("%s 上没有可识别的代理（状态 %s），没有\"完成\"可等待；请用 s 立即发送", pane.Display(), orNone(pane.AgentStatus))
@@ -455,6 +534,18 @@ func (e *Engine) dispatchLocked(ctx context.Context, m *model.Message, snap *her
 				Detail: "此版本已于 " + rec.TS.Format("15:04:05") + " 送达", At: now}}, e.saveState(m)
 		}
 	}
+	// Before resolving the pane: a session that is stopped or unreadable has no
+	// pane in the snapshot, so skipping this check would report "target not found"
+	// and fail a message whose only problem is that herdr is not answering. The
+	// tick paths hold above; this is the gate every send shares.
+	if session, hold := e.targetSession(m.Target, snap); hold != "" {
+		if hold == holdStopped {
+			return e.park(m, herdr.Pane{}, now,
+				"herdr 会话 "+session+" 未运行；启动该会话后才能发送", EventDeferred)
+		}
+		return []Event{{Kind: EventDeferred, MessageID: m.ID, Title: m.Summary(),
+			Detail: "herdr 会话 " + session + " 暂时读不到；恢复后再按 s 发送", At: now}}, nil
+	}
 	pane, ok := snap.Resolve(m.Target)
 	if !ok {
 		m.Status = model.StatusFailed
@@ -474,7 +565,9 @@ func (e *Engine) dispatchLocked(ctx context.Context, m *model.Message, snap *her
 		return nil, err
 	}
 
-	result, sendErr := e.Backend.Send(ctx, pane.ID, m.Content)
+	// Qualified, not pane.ID: two sessions can both own `w1:p1`, and a backend
+	// serving several would otherwise write into the primary session's terminal.
+	result, sendErr := e.Backend.Send(ctx, pane.QualifiedID(), m.Content)
 	if sendErr != nil {
 		return e.finishFailed(m, version, pane, reason, sendErr, now)
 	}

@@ -15,6 +15,11 @@ type Fake struct {
 	Tabs        []Tab
 	Panes       []Pane
 	Unreachable bool
+	// Session is the primary session name Fake reports, "" in tests that do not
+	// care about multi-session routing.
+	Session string
+	// Sessions overrides the reported roster; empty synthesizes the primary.
+	Sessions []Session
 
 	Sent     []FakeSend
 	Focused  []string
@@ -69,12 +74,28 @@ func (f *Fake) Snapshot(ctx context.Context) (*Snapshot, error) {
 	copy(ws, f.Workspaces)
 	tabs := make([]Tab, len(f.Tabs))
 	copy(tabs, f.Tabs)
-	snap := Build(ws, tabs, panes, agents)
+	snap := BuildSession(f.Session, ws, tabs, panes, agents)
+	snap.Primary = f.Session
+	roster := make([]Session, len(f.Sessions))
+	copy(roster, f.Sessions)
+	if len(roster) == 0 {
+		roster = []Session{{Name: f.Session, Running: true}}
+	}
+	for i := range roster {
+		if roster[i].Name != f.Session {
+			continue
+		}
+		roster[i].Running = true
+		if p, ok := snap.Focused(); ok {
+			roster[i].FocusedPane = p.ID
+		}
+	}
+	snap.Sessions = roster
 	if f.NoAgentSeq {
 		for i := range snap.Panes {
 			snap.Panes[i].StateChangeSeq = 0
 		}
-		snap.AgentSeqError = "fake: agent list unavailable"
+		snap.SeqUnavailable = map[string]string{f.Session: "fake: agent list unavailable"}
 	}
 	return snap, nil
 }

@@ -34,13 +34,19 @@ func newTestServer(t *testing.T) (*Server, context.Context, string, *herdr.Fake)
 	return New(st, scheduler.NewEngine(st, fake, led), led, dir, time.Hour), ctx, dir, fake
 }
 
-// The tree in the TUI is workspace → tab → pane, so a remote TUI has to receive
-// the tab level too; dropping it in the wire types would silently flatten the
-// picker back to two levels.
+// The tree in the TUI is session → workspace → tab → pane, so a remote TUI has to
+// receive every level; dropping one in the wire types would silently flatten the
+// picker, and a client that lost the roster could not tell two same-numbered
+// panes apart.
 func TestSnapshotCarriesTheTabLevel(t *testing.T) {
 	srv, ctx, _, fake := newTestServer(t)
+	fake.Session = "default"
 	fake.Tabs = []herdr.Tab{{ID: "w1:t1", WorkspaceID: "w1", Label: "代码"}}
 	fake.Panes[0].TabID = "w1:t1"
+	fake.Sessions = []herdr.Session{
+		{Name: "default", Running: true, Default: true, FocusedPane: "w1:p1"},
+		{Name: "note", Running: false, Socket: `\\.\pipe\note`},
+	}
 	if err := srv.Start(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -54,6 +60,47 @@ func TestSnapshotCarriesTheTabLevel(t *testing.T) {
 	tab := snap.Tabs[0]
 	if tab.ID != "w1:t1" || tab.Display() != "代码" || tab.PaneCount != 1 || tab.WorkspaceID != "w1" {
 		t.Fatalf("tab lost fields across the wire: %+v", tab)
+	}
+	if snap.Primary != "default" || len(snap.Sessions) != 2 {
+		t.Fatalf("roster across the wire = %q %+v", snap.Primary, snap.Sessions)
+	}
+	stopped := snap.Sessions[1]
+	if stopped.Name != "note" || stopped.Running || stopped.Socket == "" {
+		t.Fatalf("stopped session lost its state across the wire: %+v", stopped)
+	}
+	// The client rebuilds the tree from these, so a session that reads as running
+	// would offer a target herdr cannot write to.
+	if !snap.MultiSession() {
+		t.Fatal("a two-session roster arrived as a single session")
+	}
+}
+
+// A message aimed at another session has to survive the round trip with that
+// session named: strip it and the pane id would resolve against the primary's
+// identically counted pane, sending the text into the wrong terminal.
+func TestTargetSessionSurvivesTheRoundTrip(t *testing.T) {
+	srv, ctx, _, _ := newTestServer(t)
+	if err := srv.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	c := client.New("http://" + srv.Addr())
+	created, err := c.CreateMessage(context.Background(), &model.Message{
+		Content: "x",
+		Target:  model.Target{Session: "note", Workspace: "w1", Pane: "w1:p1", PaneLabel: "笔记面板"},
+		Trigger: model.Trigger{Kind: model.TriggerManual},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := created.Target.Session; got != "note" {
+		t.Fatalf("session after create = %q", got)
+	}
+	list, err := c.ListMessages(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 1 || list[0].Target.Session != "note" || list[0].Target.Pane != "w1:p1" {
+		t.Fatalf("messages after list = %+v", list)
 	}
 }
 

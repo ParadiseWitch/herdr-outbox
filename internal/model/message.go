@@ -105,6 +105,10 @@ type Trigger struct {
 
 // Target addresses a herdr pane. IDs win over labels when both resolve.
 type Target struct {
+	// Session is the herdr server the pane lives in. Empty means the primary
+	// session: ids are per-session counters, so two sessions can both own `w1:p1`,
+	// and an unqualified target must never match another session's pane.
+	Session        string `yaml:"session,omitempty"`
 	Workspace      string `yaml:"workspace,omitempty"`
 	WorkspaceLabel string `yaml:"workspace_label,omitempty"`
 	Pane           string `yaml:"pane,omitempty"`

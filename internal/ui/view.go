@@ -116,10 +116,15 @@ func (m *Model) headerView(width int) string {
 		stDim.Render(fmt.Sprintf("%d 已就绪", counts.armed)),
 		stDim.Render(fmt.Sprintf("%d 已发送", counts.sent))}
 	parts = append(parts, stDim.Render("│"), stDim.Render("筛选: "))
-	if m.filter.Active() {
-		parts = append(parts, stTitle.Render(m.filter.Label()))
+	// The scope is always stated, even when it is "every session": the reader
+	// needs to know whether the list they are looking at is a subset. It is
+	// highlighted only when it actually is one, which is narrower than the flags
+	// suggest — following the focused pane limits nothing while herdr has none.
+	label := m.filterLabel()
+	if m.filter.Active() || m.scopePanes() != nil {
+		parts = append(parts, stTitle.Render(label))
 	} else {
-		parts = append(parts, stDim.Render(m.filter.Label()))
+		parts = append(parts, stDim.Render(label))
 	}
 	if m.stepActive {
 		parts = append(parts, stWarn.Render("轮询中…"))
@@ -175,12 +180,19 @@ func (m *Model) listView(width, height int) string {
 	if len(list) == 0 {
 		empty := "  还没有消息"
 		hint := "  n  新建消息"
+		panes := m.scopePanes()
 		switch {
+		case m.snapErr != nil:
+			hint = "  r  重试 herdr"
+		case panes != nil:
+			// An empty list under a scope is not an empty inbox; saying so is the
+			// difference between "no messages" and "no messages here". The header
+			// already names the scope, so this row only carries the way out.
+			empty = "  当前作用域内没有消息"
+			hint = "  \\  显示全部"
 		case m.filter.Status == filterCurrent && m.currentPane == "":
 			empty = "  未在 herdr 面板内运行"
 			hint = "  无法确定当前面板"
-		case m.snapErr != nil:
-			hint = "  r  重试 herdr"
 		}
 		lines = append(lines, "", stDim.Render(empty), stDim.Render(hint))
 		return padBlock(lines, width, height)
@@ -270,22 +282,31 @@ func (m *Model) targetDisplay(msg *model.Message) string {
 func (m *Model) targetLabel(t model.Target) string {
 	ws := strings.TrimSpace(t.WorkspaceLabel)
 	name := strings.TrimSpace(t.PaneLabel)
+	session := t.Session
 	if pane, ok := m.paneForTarget(t); ok {
 		if strings.TrimSpace(pane.WsLabel) != "" {
 			ws = pane.WsLabel
 		}
 		name = paneDisplayName(pane)
+		session = pane.Session
 	}
 	if name == "" {
 		name = strings.TrimSpace(t.Pane)
 	}
+	// Only a foreign session gets prefixed. `研究 / p1` is ambiguous once two
+	// servers each own a workspace labelled 研究, but stamping the primary's name
+	// on every row would pay that cost on the case that needs no disambiguation.
+	head := ""
+	if m.snapshot.MultiSession() && session != "" && session != m.snapshot.Primary {
+		head = session + " · "
+	}
 	switch {
 	case ws != "" && name != "":
-		return ws + " / " + name
+		return head + ws + " / " + name
 	case name != "":
-		return name
+		return head + name
 	case ws != "":
-		return ws
+		return head + ws
 	default:
 		return "无目标"
 	}
@@ -582,10 +603,10 @@ func treeSplitJoin(leftPanel, rightPanel string, bodyHeight int) string {
 	return lipgloss.JoinHorizontal(lipgloss.Top, leftPanel, divider, rightPanel)
 }
 
-// treeRows renders the flattened workspace → tab → pane tree. Indent comes from
-// the row depth, group rows carry the expand marker, and `checkbox` adds the
-// filter's selection markers: a group row is checked only when every pane below
-// it is, so it reads as the whole-subtree toggle it is.
+// treeRows renders the flattened session → workspace → tab → pane tree. Indent
+// comes from the row depth, group rows carry the expand marker, and `checkbox`
+// adds the filter's selection markers: a group row is checked only when every pane
+// below it is, so it reads as the whole-subtree toggle it is.
 func treeRows(p *picker, width, bodyHeight int, checkbox bool, hint string) []string {
 	out := []string{stTitle.Render(p.title)}
 	if len(p.treeItems) == 0 {
@@ -615,6 +636,12 @@ func treeRows(p *picker, width, bodyHeight int, checkbox bool, hint string) []st
 		label := indent + marker + truncateWidth(item.label, max(labelWidth, 1))
 		if i == p.cursor {
 			out = append(out, stSelected.Render(pad(label, width-1)))
+			continue
+		}
+		// A stopped session stays readable but recedes: it can still filter the
+		// history aimed at it, so dropping the row would be the wrong signal.
+		if item.unusable {
+			out = append(out, stDim.Render(label+"  "+item.hint))
 			continue
 		}
 		if item.isParent {
@@ -702,12 +729,13 @@ func (m *Model) helpView(width int) string {
 		{"j k g G", "移动 · 跳转"},
 		{"tab h l ←→", "切换标签页"},
 		{"1-4", "全部/当前/未发送/已发送"},
+		{"\\", "清除筛选，显示所有会话的全部消息"},
 		{"s", "立即发送"},
 		{"t", "选择触发方式（手动、完成后、定时）"},
-		{"p", "在工作区/标签/面板三级树里选择目标面板"},
+		{"p", "在会话/工作区/标签/面板四级树里选择目标面板"},
 		{"u", "暂存为草稿（不发送）"},
 		{"f c d", "收藏 · 克隆 · 删除"},
-		{"x", "筛选工作区/标签/面板（多选，整组可一次选中）"},
+		{"x", "筛选会话/工作区/标签/面板（多选，整组可一次选中）"},
 		{"/", "搜索消息（标题、内容、目标）"},
 		{"r R", "刷新 herdr 状态 · 执行一次调度"},
 		{"L", "调度日志"},

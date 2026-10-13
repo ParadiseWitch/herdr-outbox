@@ -104,7 +104,12 @@ func (m *Model) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.restoreCursor()
 		return m, nil
 	case "2":
+		// 当前 is the scope's own tab: it drops any pinned selection and resumes
+		// following the focused pane.
 		m.filter.Status = filterCurrent
+		m.filter.Panes = nil
+		m.picker.selectedPanes = nil
+		m.scopeFollow = true
 		m.persistTab()
 		m.restoreCursor()
 		return m, nil
@@ -126,6 +131,10 @@ func (m *Model) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case "x":
 		m.openWorkspaceFilter()
+		return m, nil
+
+	case "\\":
+		m.clearScope()
 		return m, nil
 
 	case "r":

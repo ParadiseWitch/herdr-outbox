@@ -58,7 +58,7 @@ func treeRowsOf(items []treeItem) string {
 	return strings.Join(rows, " ")
 }
 
-const targetTreeRows = "0:研究 1:代码 2:p1 1:标签 t2 0:app"
+const targetTreeRows = "0:herdr 1:研究 2:代码 3:p1 2:标签 t2 1:app"
 
 func press(t *testing.T, m *Model, msg tea.KeyMsg) {
 	t.Helper()
@@ -97,13 +97,14 @@ func TestTargetTreeShowsWorkspaceTabPane(t *testing.T) {
 	m := threeLevelModel(t)
 	m.openTargetPicker(context.Background(), m.selected())
 
-	// The message's own workspace and tab start open, so its pane is on screen;
-	// the sibling tab is listed but collapsed, and other workspaces stay shut.
+	// The message's own session, workspace and tab start open, so its pane is on
+	// screen; the sibling tab is listed but collapsed, other workspaces stay shut.
 	if got := treeRowsOf(m.picker.treeItems); got != targetTreeRows {
 		t.Fatalf("tree = %q", got)
 	}
 	leaf := m.picker.treeItems[m.picker.cursor]
-	if leaf.key != "w1:p1" || leaf.target.Pane != "w1:p1" || leaf.tab != "w1:t1" || leaf.workspace != "w1" {
+	if leaf.key != "w1:p1" || leaf.depth != 3 || leaf.target.Pane != "w1:p1" ||
+		leaf.tab != "w1:t1" || leaf.workspace != "w1" {
 		t.Fatalf("cursor row = %+v", leaf)
 	}
 }
@@ -114,32 +115,48 @@ func TestTreeGroupToggleOpensTabsThenPanes(t *testing.T) {
 
 	// Enter on a group row opens or closes it instead of selecting it: a tab is
 	// never a send target.
-	m.picker.cursor = 1
+	putCursorOn(t, m, "w1:t1")
 	pressEnter(t, m)
 	if m.mode != modeTargetPicker {
 		t.Fatalf("group enter left the picker: mode=%v", m.mode)
 	}
-	if got := treeRowsOf(m.picker.treeItems); got != "0:研究 1:代码 1:标签 t2 0:app" {
+	if got := treeRowsOf(m.picker.treeItems); got != "0:herdr 1:研究 2:代码 2:标签 t2 1:app" {
 		t.Fatalf("collapsed tab = %q", got)
 	}
-	// Closing the workspace drops every row under it.
-	m.picker.cursor = 0
+	// Closing the workspace drops every row under it, leaving its own row.
+	putCursorOn(t, m, "w1")
 	pressEnter(t, m)
-	if got := treeRowsOf(m.picker.treeItems); got != "0:研究 0:app" {
+	if got := treeRowsOf(m.picker.treeItems); got != "0:herdr 1:研究 1:app" {
 		t.Fatalf("collapsed workspace = %q", got)
 	}
 	// Reopening the workspace brings the tab rows back, and the tab the user
 	// closed by hand stays closed.
-	m.picker.cursor = 0
+	putCursorOn(t, m, "w1")
 	pressEnter(t, m)
-	if got := treeRowsOf(m.picker.treeItems); got != "0:研究 1:代码 1:标签 t2 0:app" {
+	if got := treeRowsOf(m.picker.treeItems); got != "0:herdr 1:研究 2:代码 2:标签 t2 1:app" {
 		t.Fatalf("reopened workspace = %q", got)
 	}
 	// Reopening the tab shows its panes again.
-	m.picker.cursor = 1
+	putCursorOn(t, m, "w1:t1")
 	pressEnter(t, m)
 	if got := treeRowsOf(m.picker.treeItems); got != targetTreeRows {
 		t.Fatalf("reopened tab = %q", got)
+	}
+}
+
+// The session row is the outermost group: closing it hides the whole topology of
+// that session, which is how a stopped session gets out of the way.
+func TestTreeSessionRowCollapsesWholeSession(t *testing.T) {
+	m := threeLevelModel(t)
+	m.openTargetPicker(context.Background(), m.selected())
+	putCursorOn(t, m, "/")
+	pressEnter(t, m)
+	if got := treeRowsOf(m.picker.treeItems); got != "0:herdr" {
+		t.Fatalf("collapsed session = %q", got)
+	}
+	pressEnter(t, m)
+	if got := treeRowsOf(m.picker.treeItems); got != targetTreeRows {
+		t.Fatalf("reopened session = %q", got)
 	}
 }
 
@@ -147,9 +164,9 @@ func TestTreeGroupToggleOpensTabsThenPanes(t *testing.T) {
 func TestTreeArrowsToggleGroups(t *testing.T) {
 	m := threeLevelModel(t)
 	m.openTargetPicker(context.Background(), m.selected())
-	m.picker.cursor = 0
+	putCursorOn(t, m, "w1")
 	pressRune(t, m, 'l')
-	if got := treeRowsOf(m.picker.treeItems); got != "0:研究 0:app" {
+	if got := treeRowsOf(m.picker.treeItems); got != "0:herdr 1:研究 1:app" {
 		t.Fatalf("l did not collapse the workspace: %q", got)
 	}
 	pressRune(t, m, 'l')
@@ -157,7 +174,7 @@ func TestTreeArrowsToggleGroups(t *testing.T) {
 		t.Fatalf("l did not reopen the workspace: %q", got)
 	}
 	// A pane row has nothing to toggle, so the tree is left alone.
-	m.picker.cursor = 2
+	putCursorOn(t, m, "w1:p1")
 	pressRune(t, m, 'h')
 	if got := treeRowsOf(m.picker.treeItems); got != targetTreeRows {
 		t.Fatalf("h on a pane row changed the tree: %q", got)
@@ -169,14 +186,14 @@ func TestFilterTreeOpensEveryLevel(t *testing.T) {
 	m.openWorkspaceFilter()
 	// w1:t2 has no label from `tab list`, so the row falls back to the id suffix.
 	if got := treeRowsOf(m.picker.treeItems); got !=
-		"0:研究 1:代码 2:p1 1:标签 t2 2:p2 0:app 1:前端 2:p1" {
+		"0:herdr 1:研究 2:代码 3:p1 2:标签 t2 3:p2 1:app 2:前端 3:p1" {
 		t.Fatalf("filter tree = %q", got)
 	}
 	// The quiet column on a pane row is the status plus the stable ordinal. The
 	// row label already shows the pane title, so the hint must not repeat it.
 	var hints []string
 	for _, item := range m.picker.treeItems {
-		if item.depth == 2 {
+		if item.depth == 3 {
 			hints = append(hints, item.hint)
 		}
 	}
@@ -224,7 +241,7 @@ func TestTreePreviewLeadsWithPaneName(t *testing.T) {
 	// A pane row previews its name first, then tab, then id: the name is what a
 	// user scans for, the address is confirmation.
 	for i, item := range m.picker.treeItems {
-		if item.depth == 2 && item.workspace == "w2" {
+		if item.depth == 3 && item.workspace == "w2" {
 			m.picker.cursor = i
 		}
 	}

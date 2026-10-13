@@ -93,7 +93,7 @@ func filterFromName(s string) filterMode {
 
 type messageFilter struct {
 	Status filterMode
-	Panes  map[string]bool // pane ID -> selected
+	Panes  map[string]bool // qualified pane id -> selected
 	Query  string          // search query
 }
 
@@ -101,16 +101,42 @@ func (f messageFilter) Active() bool {
 	return f.Status != filterAll || len(f.Panes) > 0 || f.Query != ""
 }
 
-func (f messageFilter) Label() string {
-	parts := []string{f.Status.Label()}
-	if len(f.Panes) > 0 {
-		paneCount := len(f.Panes)
-		parts = append(parts, fmt.Sprintf("%d 个面板", paneCount))
+// filterLabel describes the active scope, then the status tab and the search.
+// Scope leads because it is the question the list answers most often: whose
+// messages am I looking at.
+func (m *Model) filterLabel() string {
+	scope, follows := m.scopeLabel()
+	parts := []string{scope}
+	status := m.filter.Status
+	if follows && status == filterCurrent {
+		// Following the current pane and the 当前 tab are the same restriction, so
+		// naming it twice would only reveal that the header has two authors.
+		status = filterAll
 	}
-	if f.Query != "" {
-		parts = append(parts, "搜索:"+f.Query)
+	if status != filterAll {
+		parts = append(parts, status.Label())
+	}
+	if m.filter.Query != "" {
+		parts = append(parts, "搜索:"+m.filter.Query)
 	}
 	return strings.Join(parts, " · ")
+}
+
+// scopeLabel names what the list is limited to, and reports whether that is the
+// current pane. Following is spelled out because the list then changes underneath
+// the reader, and an unlabelled change reads as a bug. The pane goes through
+// targetLabel so the header names it exactly the way the list does.
+func (m *Model) scopeLabel() (string, bool) {
+	switch {
+	case len(m.filter.Panes) > 0:
+		return fmt.Sprintf("%d 个面板", len(m.filter.Panes)), false
+	case !m.scopeFollow:
+		return "全部会话", false
+	}
+	if here, ok := m.currentPaneRef(); ok {
+		return "当前面板 " + m.targetLabel(here.Target()), true
+	}
+	return "全部会话", false
 }
 
 type (
@@ -187,9 +213,14 @@ type Model struct {
 	deleteHold *model.Message
 	detailTop  int
 
-	// currentPane is the herdr pane running this TUI; the 当前 tab shows
-	// messages targeted at it. Empty when not launched inside herdr.
+	// currentPane is the pane id this process was launched with (HERDR_PANE_ID).
+	// A popup has none: herdr clears the variable for popup commands, which is why
+	// "where am I" resolves through currentPaneRef rather than this field.
 	currentPane string
+	// scopeFollow keeps the list limited to the pane the user is in, re-resolved
+	// on every snapshot. Clearing the filter turns following off and shows every
+	// session's messages.
+	scopeFollow bool
 	statePath   string
 
 	renameInput string
@@ -224,6 +255,10 @@ func New(opts Options) *Model {
 		currentPane: strings.TrimSpace(os.Getenv("HERDR_PANE_ID")),
 		statePath:   opts.StatePath,
 	}
+	// Inside herdr the list starts limited to the pane the user is in. HERDR_ENV is
+	// what to test, not HERDR_PANE_ID: herdr sets it for popup commands as well,
+	// which is exactly the case where the pane id is withheld.
+	m.scopeFollow = os.Getenv("HERDR_ENV") == "1"
 	m.filter.Status = m.loadLastTab()
 	if s, ok := prov.(dataprovider.Scheduler); ok {
 		m.sched = s
@@ -263,6 +298,24 @@ func (m *Model) defaultTab() filterMode {
 		return filterAll
 	}
 	return filterCurrent
+}
+
+// clearScope drops every narrowing the user has applied, returning the list to
+// all messages of all sessions. 当前 has to move to 全部 as it goes: the tab is
+// the same restriction as following, so leaving it selected would re-narrow the
+// list to one pane and the keystroke would look like it did nothing. The other
+// three tabs are a different dimension and survive.
+func (m *Model) clearScope() {
+	m.filter.Panes = nil
+	m.filter.Query = ""
+	m.scopeFollow = false
+	m.picker.selectedPanes = nil
+	if m.filter.Status == filterCurrent {
+		m.filter.Status = filterAll
+		m.persistTab()
+	}
+	m.restoreCursor()
+	m.setNotice("已清除筛选: 显示全部会话消息")
 }
 
 func (m *Model) persistTab() {
@@ -522,10 +575,12 @@ func (m *Model) logResize() {}
 
 func (m *Model) visible() []*model.Message {
 	out := make([]*model.Message, 0, len(m.msgs))
+	panes := m.scopePanes()
 	for _, msg := range m.msgs {
 		switch m.filter.Status {
 		case filterCurrent:
-			if m.currentPane == "" || !strings.EqualFold(msg.Target.Pane, m.currentPane) {
+			here, ok := m.currentPaneRef()
+			if !ok || m.snapshot.QualifiedPane(msg.Target) != here.QualifiedID() {
 				continue
 			}
 		case filterUnsent:
@@ -537,7 +592,9 @@ func (m *Model) visible() []*model.Message {
 				continue
 			}
 		}
-		if len(m.filter.Panes) > 0 && !m.filter.Panes[msg.Target.Pane] {
+		// Keys are qualified: two sessions can each own `w1:p1`, and a bare id
+		// would let one session's filter hide another's messages.
+		if panes != nil && !panes[m.snapshot.QualifiedPane(msg.Target)] {
 			continue
 		}
 		if m.filter.Query != "" {
@@ -552,6 +609,23 @@ func (m *Model) visible() []*model.Message {
 		out = append(out, msg)
 	}
 	return out
+}
+
+// scopePanes is the pane set the list is limited to, or nil for no limit. A
+// selection made in the topology tree wins; otherwise the list follows the pane
+// the user is in, until the filter is cleared. Following resolves to no limit
+// while herdr has nothing focused, so a missing snapshot never blanks the list.
+func (m *Model) scopePanes() map[string]bool {
+	if len(m.filter.Panes) > 0 {
+		return m.filter.Panes
+	}
+	if !m.scopeFollow {
+		return nil
+	}
+	if here, ok := m.currentPaneRef(); ok {
+		return map[string]bool{here.QualifiedID(): true}
+	}
+	return nil
 }
 
 func (m *Model) selected() *model.Message {
@@ -626,22 +700,39 @@ func (m *Model) paneForTarget(t model.Target) (herdr.Pane, bool) {
 	return m.snapshot.Resolve(t)
 }
 
-// defaultTarget is the pane a new message goes to when the user has not chosen
-// one: the pane they were working in. Inside a pane that is this TUI's own pane;
-// in a popup it is the snapshot's focused pane, because herdr clears
-// HERDR_PANE_ID for popup commands and a popup is not a pane of the layout, so
-// the focused pane still names whatever was active before the popup opened.
+// currentPaneRef is the one definition of "the pane the user is in": the primary
+// session's focused pane in the latest snapshot. The default scope and the 当前
+// tab both read it, so the two can never disagree.
+//
+// A popup has no pane identity of its own — herdr clears HERDR_PANE_ID for popup
+// commands — and a popup is not a pane of the layout, so opening one leaves the
+// underlying focused pane untouched. That pane is what "the pane before the popup
+// opened" means here, which is why following focus works from a popup at all.
+func (m *Model) currentPaneRef() (herdr.Pane, bool) {
+	if m.snapshot == nil {
+		return herdr.Pane{}, false
+	}
+	if pane, ok := m.snapshot.Focused(); ok {
+		return pane, true
+	}
+	// Nothing focused, or no snapshot yet: the pane this process was launched in
+	// is the only remaining clue, and it belongs to the primary session.
+	return m.snapshot.Pane(m.currentPane)
+}
+
+// defaultTarget is where a new message goes when the user has not chosen a pane.
+// Unlike the scope, this prefers the pane this process is running in: the launch
+// id is a fact about the command that opened the outbox, not a guess about where
+// the user last clicked, and a message aimed somewhere else on first write is the
+// more expensive mistake.
 func (m *Model) defaultTarget() model.Target {
 	if pane, ok := m.snapshot.Pane(m.currentPane); ok {
 		return pane.Target()
 	}
-	// Either a popup, whose own pane is not in the layout, or a pane herdr no
-	// longer reports: the focused pane is the next best answer for "where was I".
-	if pane, ok := m.snapshot.Focused(); ok {
+	if pane, ok := m.currentPaneRef(); ok {
 		return pane.Target()
 	}
-	// No snapshot at all: keep the id this TUI was launched with, which resolves
-	// once herdr comes back, rather than leaving the message untargeted.
+	// No snapshot and no launch id: leave it untargeted rather than guess.
 	return model.Target{Pane: m.currentPane}
 }
 

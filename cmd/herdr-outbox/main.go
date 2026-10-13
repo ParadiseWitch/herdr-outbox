@@ -200,8 +200,9 @@ func buildBackend(opts globalOptions) (herdr.Backend, error) {
 		}
 		bin = resolved
 	}
-	cli := &herdr.CLI{Bin: bin, Session: opts.Session, ReadTimeout: 15 * time.Second, SendTimeout: 60 * time.Second}
-	return cli, nil
+	// Every running session is read and routed: a pane id is only meaningful
+	// inside the session that counted it out.
+	return herdr.NewMultiBackend(bin, opts.Session), nil
 }
 
 func cwdOrEmpty() string {
@@ -687,36 +688,58 @@ func runPanes(dir string, opts globalOptions) error {
 }
 
 func printWorkspacesAndPanes(snap *herdr.Snapshot) {
-	for _, w := range snap.Workspaces {
-		focus := ""
-		if w.Focused {
-			focus = " (focused)"
-		}
-		fmt.Printf("  %-14s %s%s\n", w.ID, w.Display(), focus)
-	}
-	// The tab column is the level the TUI tree groups panes by.
+	// Tabs and workspaces are keyed per session: two sessions can both hand out
+	// `w1`, so an unqualified lookup would show the wrong label.
 	tabLabels := make(map[string]string, len(snap.Tabs))
 	for _, t := range snap.Tabs {
-		tabLabels[t.ID] = t.Display()
+		tabLabels[herdr.Qualify(t.Session, t.ID)] = t.Display()
 	}
-	for _, p := range snap.Panes {
-		agent := p.Agent
-		if agent == "" {
-			agent = "-"
+	for _, s := range snap.Sessions {
+		current := ""
+		if s.Name == snap.Primary {
+			current = " (主会话)"
 		}
-		status := p.AgentStatus
-		if status == "" {
-			status = "shell"
+		state := ""
+		switch {
+		case s.Err != "":
+			state = "  读取失败: " + s.Err
+		case !s.Running:
+			state = "  未运行"
 		}
-		name := p.Ordinal
-		if name == "" {
-			name = "-"
+		fmt.Printf("会话 %s%s%s\n", s.Name, current, state)
+		for _, w := range snap.Workspaces {
+			if w.Session != s.Name {
+				continue
+			}
+			focus := ""
+			if w.Focused {
+				focus = " (focused)"
+			}
+			fmt.Printf("  %-14s %s%s\n", w.ID, w.Display(), focus)
 		}
-		tab := truncate(tabLabels[p.TabID], 18)
-		if tab == "" {
-			tab = "-"
+		for _, p := range snap.Panes {
+			if p.Session != s.Name {
+				continue
+			}
+			agent := p.Agent
+			if agent == "" {
+				agent = "-"
+			}
+			status := p.AgentStatus
+			if status == "" {
+				status = "shell"
+			}
+			name := p.Ordinal
+			if name == "" {
+				name = "-"
+			}
+			tab := truncate(tabLabels[herdr.Qualify(p.Session, p.TabID)], 18)
+			if tab == "" {
+				tab = "-"
+			}
+			fmt.Printf("    %-9s %-19s %-10s %-10s %-8s %s\n",
+				p.ID, tab, name, agent, status, truncate(p.Title(), 40))
 		}
-		fmt.Printf("    %-9s %-19s %-10s %-10s %-8s %s\n", p.ID, tab, name, agent, status, truncate(p.Title(), 40))
 	}
 }
 
@@ -739,30 +762,26 @@ func runDoctor(dir string, opts globalOptions) error {
 	if err != nil {
 		return fmt.Errorf("快照失败: %w", err)
 	}
-	fmt.Printf("herdr:    %d 个工作区, %d 个标签, %d 个面板\n", len(snap.Workspaces), len(snap.Tabs), len(snap.Panes))
-	if snap.AgentSeqError != "" {
-		// No state_change_seq means no completion can ever be detected, which is the
-		// first thing a stuck after_completion message needs explained.
-		fmt.Println("警告:     读不到代理状态序号 (" + snap.AgentSeqError + ")；\"等待完成\"不会触发")
-	}
-	for _, w := range snap.Workspaces {
-		focus := ""
-		if w.Focused {
-			focus = " (当前)"
+	fmt.Printf("herdr:    %d 个会话, %d 个工作区, %d 个标签, %d 个面板\n",
+		len(snap.Sessions), len(snap.Workspaces), len(snap.Tabs), len(snap.Panes))
+	for _, s := range snap.Sessions {
+		switch {
+		case s.Err != "":
+			// One unreadable session must not read as every armed message failing.
+			fmt.Printf("警告:     会话 %s 读不到 (%s)；指向它的面板本轮不处理\n", s.Name, s.Err)
+		case !s.Running:
+			fmt.Printf("会话:     %s 未运行；指向它的面板无法发送\n", s.Name)
 		}
-		fmt.Printf("  %-14s %s%s\n", w.ID, w.Display(), focus)
 	}
-	for _, p := range snap.Panes {
-		agent := p.Agent
-		if agent == "" {
-			agent = "-"
+	for _, s := range snap.Sessions {
+		// No state_change_seq means no completion can ever be detected, which is
+		// the first thing a stuck after_completion message needs explained. Keyed
+		// per session: a session with no agents is not an outage for the others.
+		if reason := snap.SeqError(s.Name); reason != "" {
+			fmt.Printf("警告:     会话 %s 读不到代理状态序号 (%s)；\"等待完成\"不会触发\n", s.Name, reason)
 		}
-		status := p.AgentStatus
-		if status == "" {
-			status = "shell"
-		}
-		fmt.Printf("    %-10s %-10s %-8s %s\n", p.ID, agent, status, truncate(p.Title(), 44))
 	}
+	printWorkspacesAndPanes(snap)
 
 	st, err := store.Open(dir)
 	if err != nil {

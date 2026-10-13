@@ -60,33 +60,54 @@ func (m *Model) openTargetPicker(ctx context.Context, sel *model.Message) {
 }
 
 type treeItem struct {
+	// key is always qualified (`session/w1`, `session/w1:t1`, `session/w1:p1`) so
+	// two sessions that both counted out `w1` cannot share expand or selection
+	// state.
 	key   string
 	label string
 	hint  string
-	// depth is the tree level: 0 workspace, 1 tab, 2 pane.
+	// depth is the tree level: 0 session, 1 workspace, 2 tab, 3 pane.
 	depth     int
 	isParent  bool
 	expanded  bool
+	session   string
 	workspace string
-	// tab is the middle level's row key: a real tab id, or the synthetic id of
-	// the "no tab" group. tabLabel is that level's display text, carried on a
+	// tab is the tab level's row key; tabLabel is its display text, carried on a
 	// pane row so the preview needs no lookup.
 	tab      string
 	tabLabel string
 	pane     herdr.Pane
 	target   model.Target
 	// paneIDs are the panes below a group row, so one keystroke selects or
-	// deselects a whole tab or workspace in the filter.
+	// deselects a whole session, workspace or tab in the filter.
 	paneIDs []string
+	// unusable marks a row that cannot receive a message: a session that is
+	// stopped or could not be read. It stays listed so history aimed there is
+	// still reachable by filtering.
+	unusable bool
 }
 
-// tabGroupID keys the middle tree level. Panes herdr reports without a tab id
-// share one synthetic group per workspace so they stay reachable.
+// tabGroupID keys the tab level, qualified by session. Panes herdr reports without
+// a tab id share one synthetic group per workspace so they stay reachable.
 func tabGroupID(p herdr.Pane) string {
 	if p.TabID == "" {
-		return p.WorkspaceID + "|-"
+		return herdr.Qualify(p.Session, p.WorkspaceID+"|-")
 	}
-	return p.TabID
+	return herdr.Qualify(p.Session, p.TabID)
+}
+
+// workspaceGroupID keys the workspace level, qualified by session.
+func workspaceGroupID(session, workspaceID string) string {
+	return herdr.Qualify(session, workspaceID)
+}
+
+// sessionGroupID keys the top level. A single-session herdr reports panes under an
+// empty session name, which still needs a key.
+func sessionGroupID(session string) string {
+	if session == "" {
+		return "/"
+	}
+	return session + "/"
 }
 
 type tabGroup struct {
@@ -113,7 +134,7 @@ func tabGroups(snap *herdr.Snapshot, panes []herdr.Pane) []tabGroup {
 		case snap != nil:
 			if t, ok := snap.Tab(id); ok {
 				label = t.Display()
-			} else if name := herdr.TabName(id); name != "" {
+			} else if name := herdr.TabName(p.TabID); name != "" {
 				label = "标签 " + name
 			}
 		}
@@ -123,9 +144,9 @@ func tabGroups(snap *herdr.Snapshot, panes []herdr.Pane) []tabGroup {
 	return groups
 }
 
-// flattenTree renders the herdr topology as workspace → tab → pane. Group rows
-// remember their state in m.picker.expanded; a group the user has not touched
-// takes m.picker.treeOpen.
+// flattenTree renders the herdr topology as session → workspace → tab → pane.
+// Group rows remember their state in m.picker.expanded; a group the user has not
+// touched takes m.picker.treeOpen.
 func (m *Model) flattenTree() []treeItem {
 	if m.snapshot == nil {
 		return nil
@@ -136,82 +157,146 @@ func (m *Model) flattenTree() []treeItem {
 		}
 		return m.picker.treeOpen
 	}
-	items := make([]treeItem, 0, len(m.snapshot.Workspaces)+len(m.snapshot.Tabs)+len(m.snapshot.Panes))
-	for _, w := range m.snapshot.Workspaces {
+	// No roster means a herdr that cannot list sessions, or a single ambient one:
+	// show the primary as one node rather than an empty tree.
+	sessions := m.snapshot.Sessions
+	if len(sessions) == 0 {
+		sessions = []herdr.Session{{Name: m.snapshot.Primary, Running: true}}
+	}
+	items := make([]treeItem, 0, len(m.snapshot.Panes)+len(sessions))
+	for _, s := range sessions {
+		unusable := !s.Running || s.Err != ""
 		panes := make([]herdr.Pane, 0, 8)
 		ids := make([]string, 0, 8)
 		for _, p := range m.snapshot.Panes {
-			if p.WorkspaceID == w.ID {
+			if p.Session == s.Name {
 				panes = append(panes, p)
-				ids = append(ids, p.ID)
+				ids = append(ids, p.QualifiedID())
 			}
 		}
-		wsOpen := open(w.ID)
+		skey := sessionGroupID(s.Name)
+		sessionOpen := open(skey)
+		label := s.Name
+		if label == "" {
+			label = "herdr"
+		}
 		items = append(items, treeItem{
-			key:       w.ID,
-			label:     w.Display(),
-			hint:      pluralPanes(len(panes)),
-			isParent:  true,
-			expanded:  wsOpen,
-			workspace: w.ID,
-			paneIDs:   ids,
+			key:      skey,
+			label:    label,
+			hint:     sessionHint(s, len(panes)),
+			isParent: true,
+			expanded: sessionOpen,
+			session:  s.Name,
+			paneIDs:  ids,
+			unusable: unusable,
 		})
-		if !wsOpen {
+		if !sessionOpen {
 			continue
 		}
-		for _, g := range tabGroups(m.snapshot, panes) {
-			groupIDs := make([]string, 0, len(g.panes))
-			for _, p := range g.panes {
-				groupIDs = append(groupIDs, p.ID)
-			}
-			tabOpen := open(g.id)
-			items = append(items, treeItem{
-				key:       g.id,
-				label:     g.label,
-				hint:      pluralPanes(len(g.panes)),
-				depth:     1,
-				isParent:  true,
-				expanded:  tabOpen,
-				workspace: w.ID,
-				tab:       g.id,
-				paneIDs:   groupIDs,
-			})
-			if !tabOpen {
+		for _, w := range m.snapshot.Workspaces {
+			if w.Session != s.Name {
 				continue
 			}
-
-			for _, p := range g.panes {
+			wp := make([]herdr.Pane, 0, 8)
+			wids := make([]string, 0, 8)
+			for _, p := range panes {
+				if p.WorkspaceID == w.ID {
+					wp = append(wp, p)
+					wids = append(wids, p.QualifiedID())
+				}
+			}
+			wkey := workspaceGroupID(s.Name, w.ID)
+			wsOpen := open(wkey)
+			items = append(items, treeItem{
+				key:       wkey,
+				label:     w.Display(),
+				hint:      pluralPanes(len(wp)),
+				depth:     1,
+				isParent:  true,
+				expanded:  wsOpen,
+				session:   s.Name,
+				workspace: w.ID,
+				paneIDs:   wids,
+				unusable:  unusable,
+			})
+			if !wsOpen {
+				continue
+			}
+			for _, g := range tabGroups(m.snapshot, wp) {
+				groupIDs := make([]string, 0, len(g.panes))
+				for _, p := range g.panes {
+					groupIDs = append(groupIDs, p.QualifiedID())
+				}
+				tabOpen := open(g.id)
 				items = append(items, treeItem{
-					key:       p.ID,
-					label:     p.Title(),
-					hint:      paneHint(p),
+					key:       g.id,
+					label:     g.label,
+					hint:      pluralPanes(len(g.panes)),
 					depth:     2,
+					isParent:  true,
+					expanded:  tabOpen,
+					session:   s.Name,
 					workspace: w.ID,
 					tab:       g.id,
-					tabLabel:  g.label,
-					pane:      p,
-					target:    targetOf(p),
+					paneIDs:   groupIDs,
+					unusable:  unusable,
 				})
+				if !tabOpen {
+					continue
+				}
+				for _, p := range g.panes {
+					items = append(items, treeItem{
+						key:       p.QualifiedID(),
+						label:     p.Title(),
+						hint:      paneHint(p),
+						depth:     3,
+						session:   s.Name,
+						workspace: w.ID,
+						tab:       g.id,
+						tabLabel:  g.label,
+						pane:      p,
+						target:    targetOf(p),
+						unusable:  unusable,
+					})
+				}
 			}
 		}
 	}
 	return items
 }
 
-// openAncestors records the workspace and tab that hold the given pane, so the
-// tree opens on the message's current target instead of on nothing.
-func (m *Model) openAncestors(paneID string) {
+// sessionHint says what a session row means when it cannot be used, since a
+// stopped session is listed but receives nothing.
+func sessionHint(s herdr.Session, panes int) string {
+	switch {
+	case s.Err != "":
+		return "读取失败"
+	case !s.Running:
+		return "未运行"
+	default:
+		return pluralPanes(panes)
+	}
+}
+
+// openAncestors records the session, workspace and tab holding a target, so the
+// tree opens on the message's current pane instead of on nothing.
+func (m *Model) openAncestors(t model.Target) {
 	if m.picker.expanded == nil {
 		m.picker.expanded = map[string]bool{}
 	}
-	for _, p := range m.snapshot.Panes {
-		if p.ID != paneID {
-			continue
+	session := m.snapshot.SessionOf(t)
+	m.picker.expanded[sessionGroupID(session)] = true
+	pane, ok := m.snapshot.Resolve(t)
+	if !ok {
+		// An unknown pane still names its session and workspace, enough to land
+		// the user where they can pick a replacement.
+		if t.Workspace != "" {
+			m.picker.expanded[workspaceGroupID(session, t.Workspace)] = true
 		}
-		m.picker.expanded[p.WorkspaceID] = true
-		m.picker.expanded[tabGroupID(p)] = true
 		return
 	}
+	m.picker.expanded[workspaceGroupID(pane.Session, pane.WorkspaceID)] = true
+	m.picker.expanded[tabGroupID(pane)] = true
 }
 
 func (m *Model) buildTreePicker() {
@@ -222,19 +307,16 @@ func (m *Model) buildTreePicker() {
 		return
 	}
 	sel := m.byID(m.picker.target)
-	if sel != nil {
-		if sel.Target.Pane != "" {
-			m.openAncestors(sel.Target.Pane)
-		} else {
-			m.picker.expanded[sel.Target.Workspace] = true
-		}
+	if sel != nil && !sel.Target.Empty() {
+		m.openAncestors(sel.Target)
 	}
 	m.picker.treeItems = m.flattenTree()
 	m.picker.title = "目标面板"
 
 	if sel != nil && sel.Target.Pane != "" {
+		want := m.snapshot.QualifiedPane(sel.Target)
 		for i, item := range m.picker.treeItems {
-			if item.key == sel.Target.Pane {
+			if item.key == want {
 				m.picker.cursor = i
 				return
 			}
@@ -356,6 +438,12 @@ func (m *Model) onTargetPickerKey(key string) (tea.Model, tea.Cmd) {
 			m.toggleTreeGroup()
 			return m, nil
 		}
+		if item.unusable {
+			// A stopped session has no socket to write to; accepting the row would
+			// queue a message that can only fail at send time.
+			m.setNotice("该会话未运行，不能作为发送目标")
+			return m, nil
+		}
 		return m.applyTarget(item.target)
 	}
 	return m, nil
@@ -379,7 +467,8 @@ func (m *Model) applyTarget(t model.Target) (tea.Model, tea.Cmd) {
 	return m, tea.Batch(m.loadMsg(), m.snapshotCmd())
 }
 
-// openWorkspaceFilter opens the workspace → tab → pane tree for multi-select filtering.
+// openWorkspaceFilter opens the session → workspace → tab → pane tree for
+// multi-select filtering.
 func (m *Model) openWorkspaceFilter() {
 	if m.snapshot == nil || len(m.snapshot.Panes) == 0 {
 		m.setNotice("herdr 状态不可用;按 r 刷新")
@@ -457,16 +546,23 @@ func (m *Model) onWorkspaceFilterKey(key string) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case "enter":
-		// Apply the filter.
+		// A non-empty selection pins the list to exactly those panes; an empty one
+		// is the opposite instruction — show everything.
 		if len(m.picker.selectedPanes) > 0 {
 			m.filter.Panes = m.picker.selectedPanes
+			// 当前 is the same dimension as the selection, and the two disagreeing
+			// would show nothing. The tree is the more specific statement.
+			if m.filter.Status == filterCurrent {
+				m.filter.Status = filterAll
+			}
 		} else {
 			m.filter.Panes = nil
+			m.scopeFollow = false
 		}
 		m.picker = picker{}
 		m.mode = modeBrowse
 		m.restoreCursor()
-		m.setNotice("筛选: " + m.filter.Label())
+		m.setNotice("筛选: " + m.filterLabel())
 		return m, nil
 	}
 	return m, nil

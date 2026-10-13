@@ -19,8 +19,11 @@ import (
 func newTestModel(t *testing.T, width, height int) (*Model, *store.Store, *herdr.Fake) {
 	t.Helper()
 	// Tests run in whatever pane launched them, so a real HERDR_PANE_ID would
-	// flip the default 当前 tab on and empty every list. Pin it off.
+	// flip the default 当前 tab on and empty every list. HERDR_ENV would arm the
+	// following scope, which restricts the list the same way. Pin both off; the
+	// tests that care about either set them explicitly.
 	t.Setenv("HERDR_PANE_ID", "")
+	t.Setenv("HERDR_ENV", "")
 	dir := t.TempDir()
 	st, err := store.Open(dir)
 	if err != nil {

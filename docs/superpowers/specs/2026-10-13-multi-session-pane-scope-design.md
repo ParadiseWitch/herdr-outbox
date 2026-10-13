@@ -131,8 +131,10 @@ type messageFilter struct {
     Query  string
 }
 // Model 新增
-scopePinned bool   // false = 跟随焦点
+scopeFollow bool   // true = 跟随焦点（HERDR_ENV=1 时默认开启）
 ```
+
+实现用 `scopeFollow` 加"`filter.Panes` 非空即固定"表达三态，不需要第三个字段：`scopePanes()` 依次判 `len(Panes) > 0` → 固定、`scopeFollow` → 跟随当前面板、否则不限。跟随但解析不到焦点（首轮快照未到 / herdr 不可达）= 不限，避免空列表。
 
 **当前面板只有一个定义**：`m.currentPaneRef()` = 主会话本轮快照的焦点面板（`snap.FocusedIn(snap.Primary)`）。默认作用域与 `当前` 状态标签都读它，不能有两份真相。
 
@@ -170,6 +172,17 @@ scopePinned bool   // false = 跟随焦点
 ### 7. 文档
 
 README 的"面板选择器"条目与"上手"段改为 4 层树 + 默认当前面板 + 清除过滤器；`helpView` 的 `p` / `x` / `1-4` 行同步。
+
+
+## 实现记录（与设计的差异 + 实测发现）
+
+- **`session list --json` 没有信封**（实测，阻塞性）：它直接打印 `{"sessions":[…]}`，而其他命令是 `{"id":…,"result":…}`。`CLI.call` 原先无条件剥信封，于是名册读取恒返回 `empty_result`，`MultiBackend.Snapshot` 静默退回单会话——多会话功能整条链路失效且不报错。现按形状判断（有 `result` 才剥），`TestUnwrapAcceptsBarePayload` 固定该行为。
+- **`dispatchLocked` 缺会话判定**（实测）：`sessionHold` 原先只挂在 tick 路径（scheduled / after_completion）上，手动 `s` 走 `SendNow` 绕过它。停止会话的面板不在快照里，`Resolve` 失败 → 消息被标成"未找到目标面板"并置 failed，把"会话没开"说成"消息坏了"。判定移到 `dispatchLocked` 解析面板之前，三条发送路径共用一个闸口。
+- **`当前` 标签与跟随不再重复显示**：两者是同一个限制，状态栏只说一次（`filterLabel` 拿到 `scopeLabel` 的 `follows` 返回值判断，不靠字符串前缀猜）。
+- **默认目标仍优先 `HERDR_PANE_ID`**，作用域优先实时焦点：`defaultTarget()` 先看本机 pane 再看焦点，`scopePanes()` 只看焦点。前者是"这条消息发给谁"，写错代价高且启动 id 是确定事实；后者是"我在看谁的列表"，跟随焦点才修好 popup。
+- **session 前缀只加在非主会话**：`targetLabel` 在名册 >1 会话且目标不是主会话时前缀 `session · `。单会话与主会话输出不变，避免每行都长一截。
+- **`HERDR_ACTIVE_PANE_ID` 未使用**：设计里作为 popup 的启动提示，实测焦点面板已覆盖该场景（popup 不改底层焦点），多留一个来源反而可能和实时焦点不一致，故不引入。
+- **清除作用域不改 `loadLastTab` 的持久值语义**：`\` 只在 `当前` 被选中时把它挪到 `全部`（否则按键看起来没生效），其余三个标签是正交维度，保持不变。
 
 ## 不在本次范围
 
