@@ -91,13 +91,15 @@ func TestScopeFollowsTheFocusedPaneOfThisSession(t *testing.T) {
 		t.Fatalf("visible = %d from session %v, want this session's message only",
 			len(got), sessionsOf(got))
 	}
-	if label, follows := m.scopeLabel(); !follows || label != "当前面板 主区 / 本机面板" {
-		t.Fatalf("scope label = %q (follows=%v)", label, follows)
+	// The scope headline carries the full path, session included.
+	if label := m.scopeLabel(); label != "当前面板 default / 主区 / 标签 t1 / 本机面板" {
+		t.Fatalf("scope label = %q", label)
 	}
-	// Following and the 当前 tab are one restriction; the header says it once.
-	m.filter.Status = filterCurrent
-	if got := m.filterLabel(); got != "当前面板 主区 / 本机面板" {
-		t.Fatalf("filter label = %q, want no repeated 当前", got)
+	// Scope (location) and the status tab (lifecycle) are independent dimensions,
+	// so the header names both when both are narrowed.
+	m.filter.Status = filterUnsent
+	if got := m.filterLabel(); got != "当前面板 default / 主区 / 标签 t1 / 本机面板 · 未处理" {
+		t.Fatalf("filter label = %q, want scope and tab both named", got)
 	}
 }
 
@@ -143,10 +145,13 @@ func TestClearScopeRevealsEverySession(t *testing.T) {
 	m, _, _ := newTestModel(t, 120, 40)
 	m.snapshot = twoSessions(t)
 	m.scopeFollow = true
-	m.filter.Status = filterCurrent
+	m.filter.Status = filterUnsent // both messages are pending, so the tab is not what limits the list
 	put(t, m, "主区消息", at("default"))
 	put(t, m, "笔记消息", at("note"))
 	m.reload(t)
+	if got := len(m.visible()); got != 1 {
+		t.Fatalf("following scope shows %d, want the focused pane only", got)
+	}
 
 	pressRune(t, m, 'c')
 
@@ -156,13 +161,13 @@ func TestClearScopeRevealsEverySession(t *testing.T) {
 	if m.scopeFollow {
 		t.Fatal("clearing left the scope following")
 	}
-	// 当前 is the same restriction as following, so it has to move to 全部 or the
-	// list would stay narrowed and the key would look dead.
-	if m.filter.Status != filterAll {
-		t.Fatalf("status tab after clearing = %v, want all", m.filter.Status)
+	// Clearing is a location action; the lifecycle tab is a different dimension
+	// and survives untouched.
+	if m.filter.Status != filterUnsent {
+		t.Fatalf("status tab after clearing = %v, want it left alone", m.filter.Status)
 	}
-	if label, follows := m.scopeLabel(); follows || label != "全部会话" {
-		t.Fatalf("scope label = %q (follows=%v), want 全部会话", label, follows)
+	if label := m.scopeLabel(); label != "全部会话" {
+		t.Fatalf("scope label = %q, want 全部会话", label)
 	}
 }
 
@@ -173,6 +178,7 @@ func TestPinnedSelectionBeatsFollowingAndKeysBySession(t *testing.T) {
 	m, _, _ := newTestModel(t, 120, 40)
 	m.snapshot = twoSessions(t)
 	m.scopeFollow = true
+	m.filter.Status = filterUnsent
 	put(t, m, "主区消息", at("default"))
 	put(t, m, "笔记消息", at("note"))
 	m.reload(t)
@@ -190,8 +196,10 @@ func TestPinnedSelectionBeatsFollowingAndKeysBySession(t *testing.T) {
 		t.Fatalf("visible after pin = %d from session %v, want the pinned session only",
 			len(got), sessionsOf(got))
 	}
-	if m.filter.Status != filterAll {
-		t.Fatalf("status tab after pinning = %v, want all", m.filter.Status)
+	// Pinning is a location action; the lifecycle tab is a different dimension and
+	// is left exactly where the user had it.
+	if m.filter.Status != filterUnsent {
+		t.Fatalf("status tab after pinning = %v, want it left alone", m.filter.Status)
 	}
 }
 
@@ -260,54 +268,37 @@ func TestStoppedSessionCannotBecomeTarget(t *testing.T) {
 	}
 }
 
-// Two sessions can each own a workspace labelled 笔记区 and a pane titled 笔记
-// 面板, so a foreign target has to name the session it came from.
-func TestForeignSessionTargetIsPrefixed(t *testing.T) {
+// Every full path names its session, so two servers that each own a workspace
+// labelled 笔记区 and a pane titled 笔记面板 cannot be confused.
+func TestTargetPathCarriesTheSession(t *testing.T) {
 	m, _, _ := newTestModel(t, 120, 40)
 	m.snapshot = twoSessions(t)
 
-	if got := m.targetLabel(at("note")); got != "note · 笔记区 / 笔记面板" {
-		t.Fatalf("foreign target = %q, want the session prefix", got)
+	if got := m.targetLabel(at("note")); got != "note / 笔记区 / 标签 t1 / 笔记面板" {
+		t.Fatalf("foreign target = %q", got)
 	}
-	// The primary needs no prefix: it is what an unqualified id already means.
-	if got := m.targetLabel(at("default")); got != "主区 / 本机面板" {
-		t.Fatalf("primary target = %q, want no prefix", got)
+	// The primary is no longer special: the full path names it too, which is what
+	// makes a same-named foreign pane unambiguous.
+	if got := m.targetLabel(at("default")); got != "default / 主区 / 标签 t1 / 本机面板" {
+		t.Fatalf("primary target = %q", got)
+	}
+	// The narrow form drops the session, spending its width on the differing levels.
+	if got := m.targetDisplay(&model.Message{Target: at("note")}); got != "笔记区 / 标签 t1 / 笔记面板" {
+		t.Fatalf("narrow target = %q, want no session", got)
 	}
 }
 
-// A single ambient session must not start wearing a prefix it cannot need.
-func TestSingleSessionTargetIsNotPrefixed(t *testing.T) {
+// An ambient session has no name, so the path calls it "herdr" -- the same word
+// the tree uses for the top row -- rather than leaving the session level blank.
+func TestAmbientSessionPathUsesHerdrName(t *testing.T) {
 	m, _, fake := newTestModel(t, 120, 40)
 	snap, err := fake.Snapshot(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
 	m.snapshot = snap
-	if got := m.targetLabel(model.Target{Workspace: "w1", Pane: "w1:p1"}); got != "研究 / qodercli-1" {
-		t.Fatalf("single-session label = %q, want no session prefix", got)
-	}
-}
-
-// The 当前 tab and the default scope ask the same question, so they must resolve
-// to the same pane even when several sessions each report a focus.
-func TestCurrentTabAndScopeAgree(t *testing.T) {
-	m, _, _ := newTestModel(t, 120, 40)
-	m.snapshot = twoSessions(t)
-	put(t, m, "主区消息", at("default"))
-	put(t, m, "笔记消息", at("note"))
-	m.reload(t)
-
-	m.scopeFollow = true
-	scoped := m.visible()
-	m.scopeFollow = false // isolate the tab from the scope
-	m.filter.Status = filterCurrent
-	tabbed := m.visible()
-
-	if len(scoped) != 1 || len(tabbed) != 1 {
-		t.Fatalf("scope shows %d, tab shows %d, want one each", len(scoped), len(tabbed))
-	}
-	if scoped[0].ID != tabbed[0].ID {
-		t.Fatalf("scope picked %q, 当前 tab picked %q", scoped[0].ID, tabbed[0].ID)
+	if got := m.targetLabel(model.Target{Workspace: "w1", Pane: "w1:p1"}); got != "herdr / 研究 / 标签 t1 / qodercli-1" {
+		t.Fatalf("ambient-session label = %q", got)
 	}
 }
 

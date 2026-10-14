@@ -171,10 +171,12 @@ type Pane struct {
 	TerminalTitleClean string        `json:"terminal_title_stripped"`
 	TerminalID         string        `json:"terminal_id"`
 
-	// Synthetic, filled in by Build: ordinal name such as qodercli-2 and the
-	// owning workspace label.
-	Ordinal string `json:"-"`
-	WsLabel string `json:"-"`
+	// Synthetic, filled in by Build: the owning workspace and tab labels, and the
+	// ordinal name such as qodercli-2. Cached on the pane so a path can be built
+	// without a second lookup, and so it survives into a stored Target.
+	Ordinal  string `json:"-"`
+	WsLabel  string `json:"-"`
+	TabLabel string `json:"-"`
 }
 
 // QualifiedID is the `session/pane-id` form, the only pane identity that means
@@ -205,8 +207,9 @@ func (p Pane) Title() string {
 	return t
 }
 
-// Name is the pane on its own, without the workspace prefix, so a stored
-// PaneLabel never repeats the workspace it already belongs to.
+// Name is the pane's stable handle: the synthetic agent ordinal, else the agent,
+// else the id. It survives a terminal retitling, which is why the picker's quiet
+// column uses it even when the row label shows a title.
 func (p Pane) Name() string {
 	if p.Ordinal != "" {
 		return p.Ordinal
@@ -217,16 +220,32 @@ func (p Pane) Name() string {
 	return p.ID
 }
 
+// DisplayName is the pane level of a path: the title herdr reports for the
+// terminal, then the stable ordinal, then the bare id. A titled pane reads as its
+// title everywhere; the id is the last resort, shown only when there is no name.
+func (p Pane) DisplayName() string {
+	if t := p.Title(); t != p.ID {
+		return t
+	}
+	if n := p.Name(); n != p.ID {
+		return n
+	}
+	return p.ID
+}
+
 // Display is the short form shown in the target picker.
 func (p Pane) Display() string {
 	if p.WsLabel != "" {
-		return p.WsLabel + " / " + p.Name()
+		return p.WsLabel + " / " + p.DisplayName()
 	}
-	return p.Name()
+	return p.DisplayName()
 }
 
 // Target is the stored form of this pane: labels are cached so the outbox can
-// show a name even while herdr is unreachable.
+// show a full path by name even while herdr is unreachable or the pane is gone.
+// The pane label is the title-preferred name, matching what the live path shows,
+// so a message does not switch between a title and an ordinal depending on whether
+// the snapshot happens to be current.
 func (p Pane) Target() model.Target {
 	return model.Target{
 		// Without the session, a pane picked in another session would be stored as
@@ -234,8 +253,10 @@ func (p Pane) Target() model.Target {
 		Session:        p.Session,
 		Workspace:      p.WorkspaceID,
 		WorkspaceLabel: p.WsLabel,
+		Tab:            p.TabID,
+		TabLabel:       p.TabLabel,
 		Pane:           p.ID,
-		PaneLabel:      p.Name(),
+		PaneLabel:      p.DisplayName(),
 		Agent:          p.Agent,
 	}
 }
@@ -298,6 +319,70 @@ func (s *Snapshot) QualifiedPane(t model.Target) string {
 // noise on every row, and there is nothing to disambiguate.
 func (s *Snapshot) MultiSession() bool {
 	return s != nil && len(s.Sessions) > 1
+}
+
+// PanePath is the pane's full address, one segment per level from session down to
+// pane. Each level is named by its live title while herdr still reports the pane,
+// else by the label cached on the target, else by its id, so a path reads by name
+// and never by a bare id unless there is genuinely no name. withSession adds the
+// leading session segment: full surfaces (the detail panel, the tree preview, the
+// CLI) carry it, narrow ones (the list's meta line, the status bar) drop it to
+// spend their scarce width on the levels that differ between panes.
+func (s *Snapshot) PanePath(t model.Target, withSession bool) string {
+	return strings.Join(s.PanePathSegments(t, withSession), " / ")
+}
+
+// PanePathSegments is PanePath without the join, for callers that style the levels
+// differently or need to know how many there are. An empty level is skipped, so a
+// pane herdr puts in no tab reads as three segments rather than a path with a gap.
+func (s *Snapshot) PanePathSegments(t model.Target, withSession bool) []string {
+	if t.Empty() {
+		return nil
+	}
+	pane, live := s.Resolve(t)
+	var segs []string
+	add := func(v string) {
+		if v = strings.TrimSpace(v); v != "" {
+			segs = append(segs, v)
+		}
+	}
+	if withSession {
+		add(s.sessionLabel(t, pane, live))
+	}
+	if live {
+		add(orID(pane.WsLabel, pane.WorkspaceID))
+		add(orID(pane.TabLabel, pane.TabID))
+		add(pane.DisplayName())
+		return segs
+	}
+	// The session was already added above; PathSegments(false) contributes only
+	// the workspace/tab/pane levels from the cached labels.
+	for _, seg := range t.PathSegments(false) {
+		add(seg)
+	}
+	return segs
+}
+
+// sessionLabel names the session level. A live pane's own session wins over the
+// target's, which may predate a move; an ambient session has no name, and the
+// tree calls it "herdr", so the path agrees.
+func (s *Snapshot) sessionLabel(t model.Target, pane Pane, live bool) string {
+	name := s.SessionOf(t)
+	if live {
+		name = pane.Session
+	}
+	if name == "" {
+		return "herdr"
+	}
+	return name
+}
+
+// orID is a path level: the title if herdr has one, else the id.
+func orID(label, id string) string {
+	if l := strings.TrimSpace(label); l != "" {
+		return l
+	}
+	return id
 }
 
 // FocusedIn returns the focused pane of one session. Snapshot.Focused would have
@@ -430,6 +515,16 @@ func BuildSession(session string, workspaces []Workspace, tabs []Tab, panes []Pa
 		}
 		ordered = append(ordered, t)
 		tabAt[p.TabID] = len(ordered) - 1
+	}
+	// Stamp each pane with its tab's display name, the same way WsLabel caches the
+	// workspace name. A path can then be built from the pane alone, and the tab
+	// level survives into a stored Target so a closed pane still reads in full.
+	tabLabel := make(map[string]string, len(ordered))
+	for _, t := range ordered {
+		tabLabel[t.ID] = t.Display()
+	}
+	for i, p := range out {
+		out[i].TabLabel = tabLabel[p.TabID]
 	}
 	return &Snapshot{Workspaces: workspaces, Tabs: ordered, Panes: out, FetchedAt: time.Now(), Source: "snapshot"}
 }

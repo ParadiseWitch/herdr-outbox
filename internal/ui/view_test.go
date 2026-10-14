@@ -61,32 +61,6 @@ func (m *Model) reload(t *testing.T) {
 	}
 }
 
-func TestCurrentTabShowsOnlyThisPane(t *testing.T) {
-	m, st, _ := newTestModel(t, 100, 30)
-	m.currentPane = "w1:p1"
-	for _, tc := range []struct {
-		pane string
-		want bool
-	}{
-		{"w1:p1", true},
-		{"w2:p9", false},
-		{"", false},
-	} {
-		if _, err := st.Create(&model.Message{
-			Content: "x", Target: model.Target{Pane: tc.pane},
-			Trigger: model.Trigger{Kind: model.TriggerManual}, Status: model.StatusPending,
-		}); err != nil {
-			t.Fatal(err)
-		}
-	}
-	m.reload(t)
-	m.filter.Status = filterCurrent
-	m.restoreCursor()
-	if got := len(m.visible()); got != 1 {
-		t.Fatalf("当前 tab shows %d messages, want 1", got)
-	}
-}
-
 func TestLastTabSurvivesARestart(t *testing.T) {
 	statePath := filepath.Join(t.TempDir(), "state.json")
 	m, _, _ := newTestModel(t, 100, 30)
@@ -102,9 +76,10 @@ func TestLastTabSurvivesARestart(t *testing.T) {
 	}
 }
 
-// Closing on 当前 used to reopen on 全部: a missing HERDR_PANE_ID silently
-// rewrote the saved tab. A saved tab must always win.
-func TestSavedCurrentTabSurvivesOutsideHerdr(t *testing.T) {
+// A state file written by an older build can still name the "current" tab that
+// has since been removed. It must resolve to a real tab rather than crash or
+// invent a filter that shows nothing; an unknown name falls back to 全部.
+func TestOldSavedCurrentTabMigrates(t *testing.T) {
 	t.Setenv("HERDR_PANE_ID", "")
 	statePath := filepath.Join(t.TempDir(), "state.json")
 	if err := os.WriteFile(statePath, []byte(`{"lastTab":"current"}`), 0o644); err != nil {
@@ -112,13 +87,12 @@ func TestSavedCurrentTabSurvivesOutsideHerdr(t *testing.T) {
 	}
 	m, _, _ := newTestModel(t, 100, 30)
 	m.statePath = statePath
-	m.currentPane = ""
-	if got := m.loadLastTab(); got != filterCurrent {
-		t.Fatalf("restored tab = %v, want current", got)
+	if got := m.loadLastTab(); got != filterAll {
+		t.Fatalf("restored tab = %v, want the 全部 fallback", got)
 	}
-	// First launch without a saved state still falls back to 全部.
-	if got := m.defaultTab(); got != filterAll {
-		t.Fatalf("default tab outside herdr = %v, want all", got)
+	// A first launch with no saved state opens on 未处理, the messages needing work.
+	if got := m.defaultTab(); got != filterUnsent {
+		t.Fatalf("default tab = %v, want unsent", got)
 	}
 }
 
@@ -216,10 +190,15 @@ func TestStatusLineShowsLivePane(t *testing.T) {
 	m.snapshot = snap
 
 	status := ansi.Strip(m.statusView(m.width))
-	for _, want := range []string{"工作区:", "面板:", "代理:"} {
+	// The status line shows one narrow path (no session) plus the agent, not the
+	// old separate 工作区/面板 fields.
+	for _, want := range []string{"位置:", "研究 / 标签 t1 / qodercli-1", "代理:"} {
 		if !strings.Contains(status, want) {
 			t.Fatalf("status line %q lacks %q", status, want)
 		}
+	}
+	if strings.Contains(status, "工作区:") || strings.Contains(status, "面板:") {
+		t.Fatalf("status line still breaks the path into labelled fields: %q", status)
 	}
 }
 
@@ -236,7 +215,7 @@ func TestDetailListsTargetTriggerAndStatus(t *testing.T) {
 	}
 	m.reload(t)
 	view := ansi.Strip(m.View())
-	for _, want := range []string{"目标: 研究 / qodercli-1", "触发: 定时", "状态: 定时", "body line"} {
+	for _, want := range []string{"目标: herdr / 研究 / 标签 t1 / qodercli-1", "触发: 定时", "状态: 定时", "body line"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("detail is missing %q in:\n%s", want, view)
 		}
@@ -268,12 +247,17 @@ func TestTargetNamePrefersLivePaneTitle(t *testing.T) {
 	m.reload(t)
 
 	view := ansi.Strip(m.View())
-	if !strings.Contains(view, "目标: 研究 / 重构支付模块") {
+	if !strings.Contains(view, "目标: herdr / 研究 / 标签 t1 / 重构支付模块") {
 		t.Fatalf("detail does not use the live pane title:\n%s", view)
 	}
-	// The list row's second line names the target the same way.
-	if !strings.Contains(view, "→ 研究 / 重构支付模块") {
+	// The list row's second line names the target by the narrow path (no session),
+	// and uses the live title, not the qodercli-1 label cached on the message. The
+	// row truncates a long path, so it asserts on the leading levels.
+	if !strings.Contains(view, "→ 研究 / 标签 t1 / 重构") {
 		t.Fatalf("list row does not use the live pane title:\n%s", view)
+	}
+	if strings.Contains(view, "→ 研究 / qodercli-1") {
+		t.Fatalf("list row still shows the stale cached label:\n%s", view)
 	}
 
 	// A pane that no longer exists keeps the stored label rather than going blank.
@@ -299,7 +283,7 @@ func TestDetailPanelHeadsWithTarget(t *testing.T) {
 	lines := strings.Split(ansi.Strip(m.View()), "\n")
 	target, body := -1, -1
 	for i, l := range lines {
-		if target < 0 && strings.Contains(l, "目标: 研究 / qodercli-1") {
+		if target < 0 && strings.Contains(l, "目标: herdr / 研究 / 标签 t1 / qodercli-1") {
 			target = i
 		}
 		if body < 0 && strings.Contains(l, "第一行正文") {

@@ -31,9 +31,13 @@ type Target struct {
 	Session        string `json:"session,omitempty"`
 	Workspace      string `json:"workspace,omitempty"`
 	WorkspaceLabel string `json:"workspace_label,omitempty"`
-	Pane           string `json:"pane,omitempty"`
-	PaneLabel      string `json:"pane_label,omitempty"`
-	Agent          string `json:"agent,omitempty"`
+	// Tab is the level between workspace and pane; the labels cache what each id
+	// was titled so a path still reads by name when herdr no longer reports it.
+	Tab       string `json:"tab,omitempty"`
+	TabLabel  string `json:"tab_label,omitempty"`
+	Pane      string `json:"pane,omitempty"`
+	PaneLabel string `json:"pane_label,omitempty"`
+	Agent     string `json:"agent,omitempty"`
 }
 
 type Trigger struct {
@@ -108,6 +112,7 @@ type Pane struct {
 	Focused        bool   `json:"focused"`
 	Ordinal        string `json:"ordinal,omitempty"`
 	WsLabel        string `json:"ws_label,omitempty"`
+	TabLabel       string `json:"tab_label,omitempty"`
 }
 
 type SendResult struct {

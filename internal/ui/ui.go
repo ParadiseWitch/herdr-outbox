@@ -47,17 +47,14 @@ type filterMode int
 
 const (
 	filterAll filterMode = iota
-	filterCurrent
 	filterUnsent
 	filterSent
 )
 
 func (f filterMode) Label() string {
 	switch f {
-	case filterCurrent:
-		return "当前"
 	case filterUnsent:
-		return "未发送"
+		return "未处理"
 	case filterSent:
 		return "已发送"
 	default:
@@ -67,8 +64,6 @@ func (f filterMode) Label() string {
 
 func (f filterMode) Name() string {
 	switch f {
-	case filterCurrent:
-		return "current"
 	case filterUnsent:
 		return "unsent"
 	case filterSent:
@@ -80,8 +75,6 @@ func (f filterMode) Name() string {
 
 func filterFromName(s string) filterMode {
 	switch s {
-	case "current":
-		return filterCurrent
 	case "unsent":
 		return filterUnsent
 	case "sent":
@@ -103,18 +96,13 @@ func (f messageFilter) Active() bool {
 
 // filterLabel describes the active scope, then the status tab and the search.
 // Scope leads because it is the question the list answers most often: whose
-// messages am I looking at.
+// messages am I looking at. The scope and the status tab are now independent
+// dimensions -- the tab is lifecycle (未处理/已发送), the scope is location -- so
+// both are named when both are narrowed.
 func (m *Model) filterLabel() string {
-	scope, follows := m.scopeLabel()
-	parts := []string{scope}
-	status := m.filter.Status
-	if follows && status == filterCurrent {
-		// Following the current pane and the 当前 tab are the same restriction, so
-		// naming it twice would only reveal that the header has two authors.
-		status = filterAll
-	}
-	if status != filterAll {
-		parts = append(parts, status.Label())
+	parts := []string{m.scopeLabel()}
+	if m.filter.Status != filterAll {
+		parts = append(parts, m.filter.Status.Label())
 	}
 	if m.filter.Query != "" {
 		parts = append(parts, "搜索:"+m.filter.Query)
@@ -122,21 +110,21 @@ func (m *Model) filterLabel() string {
 	return strings.Join(parts, " · ")
 }
 
-// scopeLabel names what the list is limited to, and reports whether that is the
-// current pane. Following is spelled out because the list then changes underneath
-// the reader, and an unlabelled change reads as a bug. The pane goes through
-// targetLabel so the header names it exactly the way the list does.
-func (m *Model) scopeLabel() (string, bool) {
+// scopeLabel names what the list is limited to. Following the current pane is
+// spelled out because the list then changes underneath the reader, and an
+// unlabelled change reads as a bug. The pane goes through targetLabel so the
+// header names it exactly the way the list does.
+func (m *Model) scopeLabel() string {
 	switch {
 	case len(m.filter.Panes) > 0:
-		return fmt.Sprintf("%d 个面板", len(m.filter.Panes)), false
+		return fmt.Sprintf("%d 个面板", len(m.filter.Panes))
 	case !m.scopeFollow:
-		return "全部会话", false
+		return "全部会话"
 	}
 	if here, ok := m.currentPaneRef(); ok {
-		return "当前面板 " + m.targetLabel(here.Target()), true
+		return "当前面板 " + m.targetLabel(here.Target())
 	}
-	return "全部会话", false
+	return "全部会话"
 }
 
 type (
@@ -286,34 +274,28 @@ func (m *Model) loadLastTab() filterMode {
 	if json.Unmarshal(data, &st) != nil {
 		return m.defaultTab()
 	}
-	// A saved tab is restored as-is: silently rewriting 当前 to 全部 made the
-	// tab impossible to keep across restarts.
+	// A saved tab is restored as-is. A state file written before the 当前 tab was
+	// removed still names "current"; filterFromName maps that unknown value to
+	// 全部, which is the honest reading of a tab that no longer exists.
 	return filterFromName(st.LastTab)
 }
 
-// defaultTab is what a first launch shows: 当前 inside herdr, 全部 elsewhere —
-// an empty list on first sight would look broken.
+// defaultTab is what a first launch shows: 未处理, the messages still needing
+// attention. The location dimension is separate and lives in the scope, so the
+// default tab says nothing about which pane is shown.
 func (m *Model) defaultTab() filterMode {
-	if m.currentPane == "" {
-		return filterAll
-	}
-	return filterCurrent
+	return filterUnsent
 }
 
-// clearScope drops every narrowing the user has applied, returning the list to
-// all messages of all sessions. 当前 has to move to 全部 as it goes: the tab is
-// the same restriction as following, so leaving it selected would re-narrow the
-// list to one pane and the keystroke would look like it did nothing. The other
-// three tabs are a different dimension and survive.
+// clearScope drops every narrowing the user has applied to *location*, returning
+// the list to all messages of all sessions. It leaves the status tab alone: the
+// tab is a different dimension (lifecycle), and clearing the location scope must
+// not silently change which lifecycle states are shown.
 func (m *Model) clearScope() {
 	m.filter.Panes = nil
 	m.filter.Query = ""
 	m.scopeFollow = false
 	m.picker.selectedPanes = nil
-	if m.filter.Status == filterCurrent {
-		m.filter.Status = filterAll
-		m.persistTab()
-	}
 	m.restoreCursor()
 	m.setNotice("已清除筛选: 显示全部会话消息")
 }
@@ -578,11 +560,6 @@ func (m *Model) visible() []*model.Message {
 	panes := m.scopePanes()
 	for _, msg := range m.msgs {
 		switch m.filter.Status {
-		case filterCurrent:
-			here, ok := m.currentPaneRef()
-			if !ok || m.snapshot.QualifiedPane(msg.Target) != here.QualifiedID() {
-				continue
-			}
 		case filterUnsent:
 			if msg.Status == model.StatusSent {
 				continue

@@ -108,9 +108,14 @@ type Target struct {
 	// Session is the herdr server the pane lives in. Empty means the primary
 	// session: ids are per-session counters, so two sessions can both own `w1:p1`,
 	// and an unqualified target must never match another session's pane.
-	Session        string `yaml:"session,omitempty"`
+	Session string `yaml:"session,omitempty"`
+	// Workspace/Tab/Pane are the address; the *Label fields cache what those ids
+	// were titled when the message was aimed, so a path still reads by name after
+	// the pane closes or herdr goes unreachable.
 	Workspace      string `yaml:"workspace,omitempty"`
 	WorkspaceLabel string `yaml:"workspace_label,omitempty"`
+	Tab            string `yaml:"tab,omitempty"`
+	TabLabel       string `yaml:"tab_label,omitempty"`
 	Pane           string `yaml:"pane,omitempty"`
 	PaneLabel      string `yaml:"pane_label,omitempty"`
 	Agent          string `yaml:"agent,omitempty"`
@@ -118,17 +123,43 @@ type Target struct {
 
 func (t Target) Empty() bool { return t.Pane == "" && t.Workspace == "" }
 
+// PathSegments is the pane address from session down to pane, built from the
+// labels stored on the target. It is the offline half of Snapshot.PanePath: when
+// herdr no longer reports the pane, this is all that can be shown. Each level
+// prefers its cached title and falls back to its id; an empty level is dropped.
+// The session is included only when the target records one -- an empty Session
+// means the primary, whose name is not knowable offline.
+func (t Target) PathSegments(withSession bool) []string {
+	// One segment per level: the cached title if present, else the id, else skip.
+	levels := [...]struct{ label, id string }{
+		{t.WorkspaceLabel, t.Workspace},
+		{t.TabLabel, t.Tab},
+		{t.PaneLabel, t.Pane},
+	}
+	segs := make([]string, 0, len(levels)+1)
+	if s := strings.TrimSpace(t.Session); withSession && s != "" {
+		segs = append(segs, s)
+	}
+	for _, l := range levels {
+		s := strings.TrimSpace(l.label)
+		if s == "" {
+			s = strings.TrimSpace(l.id)
+		}
+		if s != "" {
+			segs = append(segs, s)
+		}
+	}
+	return segs
+}
+
+// Display is the full session / workspace / tab / pane path shown when herdr
+// cannot be consulted. It is the offline twin of Snapshot.PanePath.
 func (t Target) Display() string {
-	switch {
-	case t.PaneLabel != "" && t.WorkspaceLabel != "":
-		return t.WorkspaceLabel + " / " + t.PaneLabel
-	case t.Pane != "":
-		return t.Pane
-	case t.WorkspaceLabel != "":
-		return t.WorkspaceLabel
-	default:
+	segs := t.PathSegments(true)
+	if len(segs) == 0 {
 		return "无目标"
 	}
+	return strings.Join(segs, " / ")
 }
 
 type Message struct {

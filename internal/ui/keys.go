@@ -104,21 +104,11 @@ func (m *Model) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.restoreCursor()
 		return m, nil
 	case "2":
-		// 当前 is the scope's own tab: it drops any pinned selection and resumes
-		// following the focused pane.
-		m.filter.Status = filterCurrent
-		m.filter.Panes = nil
-		m.picker.selectedPanes = nil
-		m.scopeFollow = true
-		m.persistTab()
-		m.restoreCursor()
-		return m, nil
-	case "3":
 		m.filter.Status = filterUnsent
 		m.persistTab()
 		m.restoreCursor()
 		return m, nil
-	case "4":
+	case "3":
 		m.filter.Status = filterSent
 		m.persistTab()
 		m.restoreCursor()
@@ -207,12 +197,14 @@ func (m *Model) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// cycleTab moves across the 4 status tabs, wrapping in both directions, and
-// remembers the choice for the next launch.
+// cycleTab moves across the status tabs, wrapping in both directions, and
+// remembers the choice for the next launch. The tab values are a dense 0..2
+// range, so the modulo is over the count, not a hardcoded bound.
 func (m *Model) cycleTab(delta int) {
-	n := (int(m.filter.Status) + delta) % 4
+	const count = int(filterSent) + 1
+	n := (int(m.filter.Status) + delta) % count
 	if n < 0 {
-		n += 4
+		n += count
 	}
 	m.filter.Status = filterMode(n)
 	m.persistTab()

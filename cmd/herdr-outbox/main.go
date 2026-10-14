@@ -456,8 +456,15 @@ func printMessageList(msgs []*model.Message, snap *herdr.Snapshot) {
 		return
 	}
 	for _, m := range msgs {
+		// Prefer the live path: while herdr reports the pane, its current titles
+		// beat the labels cached on the message. Offline, Target.Display is the
+		// same shape from stored labels.
+		target := m.Target.Display()
+		if snap != nil {
+			target = snap.PanePath(m.Target, true)
+		}
 		line := fmt.Sprintf("%s %-8s %-24s %s", statusMark(m.Status), m.Status,
-			truncate(m.Summary(), 24), m.Target.Display())
+			truncate(m.Summary(), 24), target)
 		switch m.Trigger.Kind {
 		case model.TriggerScheduled:
 			if m.Trigger.SendAt != nil {
@@ -625,7 +632,8 @@ func runTarget(dir string, args []string, opts globalOptions) error {
 	if err != nil {
 		return err
 	}
-	fmt.Printf("%s → %s (%s, 代理 %s)\n", id, m.Target.Display(), found.ID, orShell(found.Agent))
+	// The path already names the session, so the raw pane id would only repeat it.
+	fmt.Printf("%s → %s (代理 %s)\n", id, snap.PanePath(m.Target, true), orShell(found.Agent))
 	return nil
 }
 
@@ -687,14 +695,16 @@ func runPanes(dir string, opts globalOptions) error {
 	return nil
 }
 
+// printWorkspacesAndPanes lists the topology as the same session / workspace /
+// tab / pane path the TUI shows, each level named by its title. A pane's id is
+// printed only as a trailing handle when it has no title at all, so a bare shell
+// can still be addressed on the command line.
 func printWorkspacesAndPanes(snap *herdr.Snapshot) {
-	// Tabs and workspaces are keyed per session: two sessions can both hand out
-	// `w1`, so an unqualified lookup would show the wrong label.
-	tabLabels := make(map[string]string, len(snap.Tabs))
-	for _, t := range snap.Tabs {
-		tabLabels[herdr.Qualify(t.Session, t.ID)] = t.Display()
-	}
 	for _, s := range snap.Sessions {
+		name := s.Name
+		if name == "" {
+			name = "herdr"
+		}
 		current := ""
 		if s.Name == snap.Primary {
 			current = " (主会话)"
@@ -706,41 +716,49 @@ func printWorkspacesAndPanes(snap *herdr.Snapshot) {
 		case !s.Running:
 			state = "  未运行"
 		}
-		fmt.Printf("会话 %s%s%s\n", s.Name, current, state)
+		fmt.Printf("会话 %s%s%s\n", name, current, state)
 		for _, w := range snap.Workspaces {
 			if w.Session != s.Name {
 				continue
 			}
-			focus := ""
+			marker := ""
 			if w.Focused {
-				focus = " (focused)"
+				marker = " (focused)"
 			}
-			fmt.Printf("  %-14s %s%s\n", w.ID, w.Display(), focus)
-		}
-		for _, p := range snap.Panes {
-			if p.Session != s.Name {
-				continue
+			fmt.Printf("  %s%s\n", w.Display(), marker)
+			for _, p := range snap.Panes {
+				if p.Session != s.Name || p.WorkspaceID != w.ID {
+					continue
+				}
+				fmt.Printf("    %s  %s\n", paneLeaf(p), paneStatus(p))
 			}
-			agent := p.Agent
-			if agent == "" {
-				agent = "-"
-			}
-			status := p.AgentStatus
-			if status == "" {
-				status = "shell"
-			}
-			name := p.Ordinal
-			if name == "" {
-				name = "-"
-			}
-			tab := truncate(tabLabels[herdr.Qualify(p.Session, p.TabID)], 18)
-			if tab == "" {
-				tab = "-"
-			}
-			fmt.Printf("    %-9s %-19s %-10s %-10s %-8s %s\n",
-				p.ID, tab, name, agent, status, truncate(p.Title(), 40))
 		}
 	}
+}
+
+// paneLeaf is the tab / pane part of a pane's path: its tab title, then the pane
+// title, falling back to the id only when there is no title to show.
+func paneLeaf(p herdr.Pane) string {
+	tab := p.TabLabel
+	if tab == "" {
+		tab = "-"
+	}
+	leaf := p.DisplayName()
+	if leaf == p.ID {
+		leaf += " (" + p.ID + ")"
+	}
+	return tab + " / " + leaf
+}
+
+func paneStatus(p herdr.Pane) string {
+	status := p.AgentStatus
+	if status == "" {
+		status = "shell"
+	}
+	if p.Agent != "" {
+		return p.Agent + " " + status
+	}
+	return status
 }
 
 func runDoctor(dir string, opts globalOptions) error {

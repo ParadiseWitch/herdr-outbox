@@ -72,12 +72,11 @@ type treeItem struct {
 	expanded  bool
 	session   string
 	workspace string
-	// tab is the tab level's row key; tabLabel is its display text, carried on a
-	// pane row so the preview needs no lookup.
-	tab      string
-	tabLabel string
-	pane     herdr.Pane
-	target   model.Target
+	// tab is the tab level's row key, carried on a pane row so the leaf knows
+	// which group it belongs to.
+	tab    string
+	pane   herdr.Pane
+	target model.Target
 	// paneIDs are the panes below a group row, so one keystroke selects or
 	// deselects a whole session, workspace or tab in the filter.
 	paneIDs []string
@@ -253,7 +252,6 @@ func (m *Model) flattenTree() []treeItem {
 						session:   s.Name,
 						workspace: w.ID,
 						tab:       g.id,
-						tabLabel:  g.label,
 						pane:      p,
 						target:    targetOf(p),
 						unusable:  unusable,
@@ -550,11 +548,6 @@ func (m *Model) onWorkspaceFilterKey(key string) (tea.Model, tea.Cmd) {
 		// is the opposite instruction — show everything.
 		if len(m.picker.selectedPanes) > 0 {
 			m.filter.Panes = m.picker.selectedPanes
-			// 当前 is the same dimension as the selection, and the two disagreeing
-			// would show nothing. The tree is the more specific statement.
-			if m.filter.Status == filterCurrent {
-				m.filter.Status = filterAll
-			}
 		} else {
 			m.filter.Panes = nil
 			m.scopeFollow = false

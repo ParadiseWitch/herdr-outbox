@@ -176,6 +176,54 @@ func TestResolveAcceptsStoredForms(t *testing.T) {
 	}
 }
 
+// PanePath is the single source of the session / workspace / tab / pane string
+// every surface shows. Each level is titled while herdr reports the pane, and
+// falls back to the id only where there is no title.
+func TestPanePathTitlesEveryLevel(t *testing.T) {
+	snap := BuildSession("default",
+		[]Workspace{{ID: "w1", Label: "研究"}},
+		[]Tab{{ID: "w1:t1", WorkspaceID: "w1", Label: "代码"}},
+		[]Pane{
+			{ID: "w1:p1", WorkspaceID: "w1", TabID: "w1:t1", TerminalTitleClean: "重构支付", Agent: "qodercli"},
+			{ID: "w1:p2", WorkspaceID: "w1", TabID: "w1:t1"}, // no title, no agent: id is the only name
+		},
+		nil)
+
+	// A titled pane reads by title at every level; the session leads the full path.
+	if got := snap.PanePath(snap.Panes[0].Target(), true); got != "default / 研究 / 代码 / 重构支付" {
+		t.Fatalf("full path = %q", got)
+	}
+	// The narrow form drops the session, spending its width on the differing levels.
+	if got := snap.PanePath(snap.Panes[0].Target(), false); got != "研究 / 代码 / 重构支付" {
+		t.Fatalf("narrow path = %q", got)
+	}
+	// Build stamped the tab title onto each pane so a path needs no second lookup.
+	if snap.Panes[0].TabLabel != "代码" {
+		t.Fatalf("pane tab label not stamped: %+v", snap.Panes[0])
+	}
+	// A pane with no title and no agent falls back to its id -- the last resort.
+	if got := snap.PanePath(snap.Panes[1].Target(), true); got != "default / 研究 / 代码 / w1:p2" {
+		t.Fatalf("untitled pane path = %q", got)
+	}
+}
+
+// Once herdr stops reporting a pane, the path is rebuilt from the labels cached
+// on the stored target, so a closed pane still reads in full rather than blank.
+func TestPanePathFallsBackToStoredLabels(t *testing.T) {
+	snap := BuildSession("default", nil, nil, nil, nil)
+	stored := model.Target{
+		Session: "default", Workspace: "wZ", WorkspaceLabel: "已关工作区",
+		Tab: "wZ:t9", TabLabel: "旧标签", Pane: "wZ:p9", PaneLabel: "wZ:p9",
+	}
+	if got := snap.PanePath(stored, true); got != "default / 已关工作区 / 旧标签 / wZ:p9" {
+		t.Fatalf("offline path = %q", got)
+	}
+	// An empty target has no levels at all, so it renders as no target.
+	if got := snap.PanePath(model.Target{}, true); got != "" {
+		t.Fatalf("empty target path = %q, want empty", got)
+	}
+}
+
 func TestErrorClassification(t *testing.T) {
 	blocked := &CLIError{Code: "agent_blocked", Message: "agent is waiting at a dialog"}
 	if !Blocked(blocked) || Stalled(blocked) || NoAgent(blocked) {

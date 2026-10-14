@@ -150,26 +150,18 @@ func (m *Model) noticeView(width int) string {
 }
 
 func (m *Model) listView(width, height int) string {
-	// Status tabs
-	tabs := []struct {
-		key   string
-		label string
-		mode  filterMode
-	}{
-		{"1", "全部", filterAll},
-		{"2", "当前", filterCurrent},
-		{"3", "未发送", filterUnsent},
-		{"4", "已发送", filterSent},
-	}
+	// Status tabs: the label comes from the mode itself, so the row and the
+	// header can never disagree about what a tab is called.
+	modes := []filterMode{filterAll, filterUnsent, filterSent}
 	tabLine := []string{}
-	for i, tab := range tabs {
-		label := tab.label
-		if m.filter.Status == tab.mode {
+	for i, mode := range modes {
+		label := mode.Label()
+		if m.filter.Status == mode {
 			tabLine = append(tabLine, stSelected.Render(" "+label+" "))
 		} else {
 			tabLine = append(tabLine, stDim.Render(" "+label+" "))
 		}
-		if i < len(tabs)-1 {
+		if i < len(modes)-1 {
 			tabLine = append(tabLine, stDim.Render(" "))
 		}
 	}
@@ -190,9 +182,6 @@ func (m *Model) listView(width, height int) string {
 			// already names the scope, so this row only carries the way out.
 			empty = "  当前作用域内没有消息"
 			hint = "  c  显示全部"
-		case m.filter.Status == filterCurrent && m.currentPane == "":
-			empty = "  未在 herdr 面板内运行"
-			hint = "  无法确定当前面板"
 		}
 		lines = append(lines, "", stDim.Render(empty), stDim.Render(hint))
 		return padBlock(lines, width, height)
@@ -253,63 +242,32 @@ func (m *Model) listRows(msg *model.Message, width int, selected bool) []string 
 	return []string{row, stDim.Render(meta)}
 }
 
-// paneDisplayName names a live pane the way the picker tree does: the herdr pane
-// title (terminal title, else the pane label), then the synthetic agent ordinal
-// for a pane with no title, then the bare id.
-func paneDisplayName(p herdr.Pane) string {
-	if t := p.Title(); t != p.ID {
-		return t
+// panePath is the one formatter behind every place a target is shown, so the
+// list, the detail panel, the picker and the status bar can never disagree about
+// a pane's name. withSession adds the leading session segment: full surfaces carry
+// it, the narrow ones spend their width on the levels that differ between panes.
+func (m *Model) panePath(t model.Target, withSession bool) string {
+	segs := m.snapshot.PanePathSegments(t, withSession)
+	if len(segs) == 0 {
+		return "无目标"
 	}
-	if n := p.Name(); n != p.ID {
-		return n
-	}
-	return p.ID
+	return strings.Join(segs, " / ")
 }
 
-// targetDisplay is where a message goes, named from live herdr state whenever the
-// pane can still be resolved, so a renamed or retitled pane reads the same in the
-// list, the detail panel, and the picker. A message aimed at a pane that is gone
-// keeps the label stored on it.
+// targetDisplay is the narrow form used in the list's meta line and the search
+// haystack: workspace / tab / pane, no session.
 func (m *Model) targetDisplay(msg *model.Message) string {
 	if msg == nil {
 		return "无目标"
 	}
-	return m.targetLabel(msg.Target)
+	return m.panePath(msg.Target, false)
 }
 
-// targetLabel is targetDisplay for a bare target, so the notice after a pick
-// names the pane the same way the list does.
+// targetLabel is the full form used where there is room and the session matters:
+// the notice after a pick and the scope headline. It names the pane the same way
+// the list does, only with the session in front.
 func (m *Model) targetLabel(t model.Target) string {
-	ws := strings.TrimSpace(t.WorkspaceLabel)
-	name := strings.TrimSpace(t.PaneLabel)
-	session := t.Session
-	if pane, ok := m.paneForTarget(t); ok {
-		if strings.TrimSpace(pane.WsLabel) != "" {
-			ws = pane.WsLabel
-		}
-		name = paneDisplayName(pane)
-		session = pane.Session
-	}
-	if name == "" {
-		name = strings.TrimSpace(t.Pane)
-	}
-	// Only a foreign session gets prefixed. `研究 / p1` is ambiguous once two
-	// servers each own a workspace labelled 研究, but stamping the primary's name
-	// on every row would pay that cost on the case that needs no disambiguation.
-	head := ""
-	if m.snapshot.MultiSession() && session != "" && session != m.snapshot.Primary {
-		head = session + " · "
-	}
-	switch {
-	case ws != "" && name != "":
-		return head + ws + " / " + name
-	case name != "":
-		return head + name
-	case ws != "":
-		return head + ws
-	default:
-		return "无目标"
-	}
+	return m.panePath(t, true)
 }
 
 // metaFor is the quiet second line under each entry: where it goes and when.
@@ -438,16 +396,15 @@ func (m *Model) detailPanel(width, height int) string {
 	return padBlock(lines, width, height)
 }
 
-// targetLine is the detail panel's headline: where the message goes, named from
-// live herdr state, plus the pane id so an identically named pane stays
-// distinguishable.
+// targetLine is the detail panel's headline: the full session / workspace / tab /
+// pane path. It carries the session, so an identically named pane in another
+// server is already distinguishable and the raw id adds nothing.
 func (m *Model) targetLine(msg *model.Message) string {
-	line := "目标: " + m.targetDisplay(msg)
-	if pane, ok := m.paneFor(msg); ok {
-		return line + "  (" + pane.ID + ")"
-	}
+	line := "目标: " + m.panePath(msg.Target, true)
 	if msg.Target.Pane != "" {
-		return line + "  (面板未找到)"
+		if _, ok := m.paneFor(msg); !ok {
+			line += "  (面板未找到)"
+		}
 	}
 	return line
 }
@@ -515,11 +472,12 @@ func (m *Model) statusView(width int) string {
 
 	sel := m.selected()
 	if sel != nil {
-		if sel.Target.WorkspaceLabel != "" {
-			parts = append(parts, stDim.Render("工作区:"), stTitle.Render(sel.Target.WorkspaceLabel))
+		if !sel.Target.Empty() {
+			// One narrow path, not separate 工作区/面板 fields: the status line has
+			// room for a location, not for a labelled breakdown of it.
+			parts = append(parts, stDim.Render("位置:"), stTitle.Render(m.panePath(sel.Target, false)))
 		}
 		if pane, ok := m.paneFor(sel); ok {
-			parts = append(parts, stDim.Render("面板:"), stTitle.Render(pane.Title()))
 			if pane.Agent != "" {
 				parts = append(parts, stDim.Render("代理:"), stTitle.Render(pane.Agent), statusStyle(pane.AgentStatus).Render(pane.AgentStatus))
 			}
@@ -693,13 +651,11 @@ func (m *Model) treePreviewPanel(width, bodyHeight int, showSelection bool) stri
 		out = append(out, stDim.Render("  "+item.hint))
 		return padBlock(out, width, bodyHeight)
 	}
-	// The pane's own name leads the preview, the way it leads the detail panel;
-	// the tab and id are the address under it.
+	// The pane's own title leads, then the full path under it. The path replaces
+	// the old raw-id address line: it names every level by title and only falls
+	// back to an id when a level genuinely has no name.
 	out = append(out, stTitle.Render("  "+truncateWidth(item.label, max(width-4, 1))))
-	if item.tabLabel != "" {
-		out = append(out, stDim.Render("  标签: "+truncateWidth(item.tabLabel, max(width-4, 1))))
-	}
-	out = append(out, stDim.Render("  "+item.pane.ID))
+	out = append(out, stDim.Render("  路径: "+truncateWidth(m.panePath(item.target, true), max(width-10, 1))))
 	if showSelection {
 		if paneMark(p, []string{item.key}) == "●" {
 			out = append(out, stOk.Render("  ● 已选择"))
@@ -728,7 +684,7 @@ func (m *Model) helpView(width int) string {
 		{"i", "重命名标题（留空显示内容预览）"},
 		{"j k g G", "移动 · 跳转"},
 		{"tab h l ←→", "切换标签页"},
-		{"1-4", "全部/当前/未发送/已发送"},
+		{"1-3", "全部/未处理/已发送"},
 		{"c", "清除筛选，显示所有会话的全部消息"},
 		{"s", "立即发送"},
 		{"t", "选择触发方式（手动、完成后、定时）"},

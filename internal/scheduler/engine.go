@@ -225,7 +225,7 @@ func (e *Engine) sessionHold(m *model.Message, snap *herdr.Snapshot, now time.Ti
 	case holdStopped:
 		// park records the reason once and stays quiet, so a stopped session does
 		// not emit one event per tick.
-		evs, err := e.park(m, herdr.Pane{}, now,
+		evs, err := e.park(m, snap, now,
 			"herdr 会话 "+session+" 未运行；启动该会话后才能发送", EventDeferred)
 		return evs, err == nil
 	default:
@@ -281,12 +281,12 @@ func (e *Engine) advanceCompletion(ctx context.Context, m *model.Message, snap *
 	}
 	pane, ok := snap.Resolve(m.Target)
 	if !ok {
-		return e.park(m, pane, now, "目标面板已消失；按 p 重新选择", EventDeferred)
+		return e.park(m, snap, now, "目标面板已消失；按 p 重新选择", EventDeferred)
 	}
 	e.bindTarget(m, pane)
 
 	if seq := snap.SeqError(pane.Session); seq != "" {
-		return e.park(m, pane, now, "herdr 未返回代理状态序号，无法判断是否完成；消息保持等待", EventDeferred)
+		return e.park(m, snap, now, "herdr 未返回代理状态序号，无法判断是否完成；消息保持等待", EventDeferred)
 	}
 
 	switch pane.AgentStatus {
@@ -304,7 +304,7 @@ func (e *Engine) advanceCompletion(ctx context.Context, m *model.Message, snap *
 			m.ObservedWorking = true
 			changed = true
 			events = append(events, Event{Kind: EventArmed, MessageID: m.ID, Title: m.Summary(),
-				Pane: pane.Display(), Detail: "代理工作中；完成后将发送", At: now})
+				Pane: snap.PanePath(m.Target, true), Detail: "代理工作中；完成后将发送", At: now})
 		}
 		if m.SettleSince != nil {
 			m.SettleSince = nil
@@ -323,7 +323,7 @@ func (e *Engine) advanceCompletion(ctx context.Context, m *model.Message, snap *
 		if m.SettleSince != nil {
 			m.SettleSince = nil
 			return []Event{{Kind: EventDeferred, MessageID: m.ID, Title: m.Summary(),
-				Pane: pane.Display(), Detail: "代理等待审批中；消息暂存", At: now}}, e.saveState(m)
+				Pane: snap.PanePath(m.Target, true), Detail: "代理等待审批中；消息暂存", At: now}}, e.saveState(m)
 		}
 		return nil, nil
 
@@ -334,7 +334,7 @@ func (e *Engine) advanceCompletion(ctx context.Context, m *model.Message, snap *
 			if m.LastError != "" {
 				m.LastError = ""
 				return []Event{{Kind: EventArmed, MessageID: m.ID, Title: m.Summary(),
-					Pane: pane.Display(), Detail: "已记录基线，等待下一次完成", At: now}}, e.saveState(m)
+					Pane: snap.PanePath(m.Target, true), Detail: "已记录基线，等待下一次完成", At: now}}, e.saveState(m)
 			}
 			return nil, e.saveState(m)
 		}
@@ -360,7 +360,7 @@ func (e *Engine) advanceCompletion(ctx context.Context, m *model.Message, snap *
 		// herdr cannot classify this pane: a plain shell, or an agent that has since
 		// exited. No state transition will ever be reported for it, so waiting is
 		// not a delay but a dead end. Say so instead of holding the message quietly.
-		return e.park(m, pane, now,
+		return e.park(m, snap, now,
 			fmt.Sprintf("该面板没有可等待的代理（状态 %s）；请按 p 换面板，或用 s 立即发送", orNone(pane.AgentStatus)),
 			EventMissed)
 	}
@@ -368,14 +368,14 @@ func (e *Engine) advanceCompletion(ctx context.Context, m *model.Message, snap *
 
 // park records a standing explanation once and then stays quiet, so a condition
 // that outlasts many ticks does not emit an event or a disk write per tick.
-func (e *Engine) park(m *model.Message, pane herdr.Pane, now time.Time, detail string, kind EventKind) ([]Event, error) {
+func (e *Engine) park(m *model.Message, snap *herdr.Snapshot, now time.Time, detail string, kind EventKind) ([]Event, error) {
 	if m.LastError == detail {
 		return nil, nil
 	}
 	m.LastError = detail
 	m.SettleSince = nil
 	return []Event{{Kind: kind, MessageID: m.ID, Title: m.Summary(),
-		Pane: pane.Display(), Detail: detail, At: now}}, e.saveState(m)
+		Pane: snap.PanePath(m.Target, true), Detail: detail, At: now}}, e.saveState(m)
 }
 
 func orNone(s string) string {
@@ -434,10 +434,10 @@ func (e *Engine) armFrom(m *model.Message, snap *herdr.Snapshot) (*herdr.Pane, e
 		// that simply hosts no agents, is not a whole-herdr outage.
 		if seq := snap.SeqError(pane.Session); seq != "" {
 			return &pane, fmt.Errorf("%s 所属会话无法给出代理状态序号（%s），无法判断完成；请先用 s 发送",
-				pane.Display(), seq)
+				snap.PanePath(m.Target, true), seq)
 		}
 		if !pane.Trackable() {
-			return &pane, fmt.Errorf("%s 上没有可识别的代理（状态 %s），没有\"完成\"可等待；请用 s 立即发送", pane.Display(), orNone(pane.AgentStatus))
+			return &pane, fmt.Errorf("%s 上没有可识别的代理（状态 %s），没有\"完成\"可等待；请用 s 立即发送", snap.PanePath(m.Target, true), orNone(pane.AgentStatus))
 		}
 	}
 	m.BaselineSeq = pane.StateChangeSeq
@@ -540,7 +540,7 @@ func (e *Engine) dispatchLocked(ctx context.Context, m *model.Message, snap *her
 	// tick paths hold above; this is the gate every send shares.
 	if session, hold := e.targetSession(m.Target, snap); hold != "" {
 		if hold == holdStopped {
-			return e.park(m, herdr.Pane{}, now,
+			return e.park(m, snap, now,
 				"herdr 会话 "+session+" 未运行；启动该会话后才能发送", EventDeferred)
 		}
 		return []Event{{Kind: EventDeferred, MessageID: m.ID, Title: m.Summary(),
@@ -569,7 +569,7 @@ func (e *Engine) dispatchLocked(ctx context.Context, m *model.Message, snap *her
 	// serving several would otherwise write into the primary session's terminal.
 	result, sendErr := e.Backend.Send(ctx, pane.QualifiedID(), m.Content)
 	if sendErr != nil {
-		return e.finishFailed(m, version, pane, reason, sendErr, now)
+		return e.finishFailed(m, version, snap, pane, reason, sendErr, now)
 	}
 	rec := Record{TS: e.clock(), ID: m.ID, Version: version, Phase: PhaseAcked, Pane: pane.ID,
 		Surface: result.Surface, Reason: reason}
@@ -587,10 +587,10 @@ func (e *Engine) dispatchLocked(ctx context.Context, m *model.Message, snap *her
 	if result.Warning != "" {
 		detail += "; " + result.Warning
 	}
-	return []Event{{Kind: EventSent, MessageID: m.ID, Title: m.Summary(), Pane: pane.Display(), Detail: detail, At: sent}}, e.saveState(m)
+	return []Event{{Kind: EventSent, MessageID: m.ID, Title: m.Summary(), Pane: snap.PanePath(m.Target, true), Detail: detail, At: sent}}, e.saveState(m)
 }
 
-func (e *Engine) finishFailed(m *model.Message, version string, pane herdr.Pane, reason string, sendErr error, now time.Time) ([]Event, error) {
+func (e *Engine) finishFailed(m *model.Message, version string, snap *herdr.Snapshot, pane herdr.Pane, reason string, sendErr error, now time.Time) ([]Event, error) {
 	_ = e.Ledger.Append(Record{TS: now, ID: m.ID, Version: version, Phase: PhaseFailed,
 		Pane: pane.ID, Reason: reason, Error: sendErr.Error()})
 	msg := strings.TrimSpace(sendErr.Error())
@@ -599,12 +599,12 @@ func (e *Engine) finishFailed(m *model.Message, version string, pane herdr.Pane,
 		m.LastError = msg
 		m.SettleSince = nil
 		return []Event{{Kind: EventDeferred, MessageID: m.ID, Title: m.Summary(),
-			Pane: pane.Display(), Detail: "暂存: " + msg, At: now}}, e.saveState(m)
+			Pane: snap.PanePath(m.Target, true), Detail: "暂存: " + msg, At: now}}, e.saveState(m)
 	}
 	m.Status = model.StatusFailed
 	m.LastError = msg
 	return []Event{{Kind: EventFailed, MessageID: m.ID, Title: m.Summary(),
-		Pane: pane.Display(), Detail: msg, At: now}}, e.saveState(m)
+		Pane: snap.PanePath(m.Target, true), Detail: msg, At: now}}, e.saveState(m)
 }
 
 // saveState persists a lifecycle change without bumping the revision, so the

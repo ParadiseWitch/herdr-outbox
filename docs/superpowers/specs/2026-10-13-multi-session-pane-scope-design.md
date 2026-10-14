@@ -178,11 +178,10 @@ README 的"面板选择器"条目与"上手"段改为 4 层树 + 默认当前面
 
 - **`session list --json` 没有信封**（实测，阻塞性）：它直接打印 `{"sessions":[…]}`，而其他命令是 `{"id":…,"result":…}`。`CLI.call` 原先无条件剥信封，于是名册读取恒返回 `empty_result`，`MultiBackend.Snapshot` 静默退回单会话——多会话功能整条链路失效且不报错。现按形状判断（有 `result` 才剥），`TestUnwrapAcceptsBarePayload` 固定该行为。
 - **`dispatchLocked` 缺会话判定**（实测）：`sessionHold` 原先只挂在 tick 路径（scheduled / after_completion）上，手动 `s` 走 `SendNow` 绕过它。停止会话的面板不在快照里，`Resolve` 失败 → 消息被标成"未找到目标面板"并置 failed，把"会话没开"说成"消息坏了"。判定移到 `dispatchLocked` 解析面板之前，三条发送路径共用一个闸口。
-- **`当前` 标签与跟随不再重复显示**：两者是同一个限制，状态栏只说一次（`filterLabel` 拿到 `scopeLabel` 的 `follows` 返回值判断，不靠字符串前缀猜）。
 - **默认目标仍优先 `HERDR_PANE_ID`**，作用域优先实时焦点：`defaultTarget()` 先看本机 pane 再看焦点，`scopePanes()` 只看焦点。前者是"这条消息发给谁"，写错代价高且启动 id 是确定事实；后者是"我在看谁的列表"，跟随焦点才修好 popup。
-- **session 前缀只加在非主会话**：`targetLabel` 在名册 >1 会话且目标不是主会话时前缀 `session · `。单会话与主会话输出不变，避免每行都长一截。
+- **面板路径统一为四级 `会话 / 工作区 / 标签 / 面板`，各级优先标题**：`Snapshot.PanePath(target, withSession)` 是唯一来源，取代原先四处各写各的两级串。完整路径（详情、树预览、CLI、调度事件）始终带会话段——这让两个同名面板可区分；窄处（列表 meta、状态栏）省掉会话段把宽度留给真正不同的层。`Build` 像 `WsLabel` 那样把 `TabLabel` 盖到每个 pane，`Target` 也补了 `Tab`/`TabLabel`，所以面板消失后仍能按缓存标题读出全路径，只有某级确实没名字时才回退到 id。
 - **`HERDR_ACTIVE_PANE_ID` 未使用**：设计里作为 popup 的启动提示，实测焦点面板已覆盖该场景（popup 不改底层焦点），多留一个来源反而可能和实时焦点不一致，故不引入。
-- **清除作用域不改 `loadLastTab` 的持久值语义**：`c` 只在 `当前` 被选中时把它挪到 `全部`（否则按键看起来没生效），其余三个标签是正交维度，保持不变。
+- **删除 `当前` 状态标签，默认标签改为 `未处理`**（用户指定，覆盖原"保留 4 个标签"决策）：状态标签只剩 `全部 / 未处理 / 已发送`（原 `未发送` 更名），键位重排为 `1/2/3`。`当前` 与"跟随焦点作用域"本是两回事——tab 比的是 `msg.Target.Pane == 焦点面板`，作用域是 `scopePanes()` 的限定集合——之前特意合并成同一 `currentPaneRef`。删掉 tab 后**作用域跟随完整保留**：在 herdr 里打开仍默认只看当前面板，header 标"当前面板 …"，`x` 固定多选、`c` 清除。区别是删 tab 后**没有再点回"跟随"的入口**（原 `2` 键会清 pin 并 `scopeFollow=true`）；`c` 之后要恢复跟随只能重启。作用域与标签现在是彻底正交的两层：`clearScope` 与树固定选择都只动位置、绝不碰生命周期标签（`TestClearScopeRevealsEverySession`、`TestPinnedSelectionBeatsFollowingAndKeysBySession` 固定此契约）。旧 state 文件里的 `"lastTab":"current"` 经 `filterFromName` 落到 `全部` 兜底，不崩（`TestOldSavedCurrentTabMigrates`）。
 - **清除键从 `\` 改为 `c`，克隆让位到 `y`**（用户指定）：`c` 原绑克隆，但"清除筛选"是更高频动作且 `c`(lear) 比反斜杠好记；克隆挪到 `y`，`y` 在浏览态本就空闲（只在删除确认子模式里用作"确认"，两者不冲突）。`f y d` = 收藏 · 克隆 · 删除。
 
 ## 不在本次范围

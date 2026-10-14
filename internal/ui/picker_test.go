@@ -241,28 +241,29 @@ func TestTreePreviewLeadsWithPaneName(t *testing.T) {
 	m := threeLevelModel(t)
 	m.openWorkspaceFilter()
 
-	// A pane row previews its name first, then tab, then id: the name is what a
-	// user scans for, the address is confirmation.
+	// A pane row previews its title first, then the full path under it. The path
+	// names every level by title and never shows a raw id when a title exists.
 	for i, item := range m.picker.treeItems {
 		if item.depth == 3 && item.workspace == "w2" {
 			m.picker.cursor = i
 		}
 	}
 	lines := strings.Split(ansi.Strip(m.treePreviewPanel(60, 24, true)), "\n")
-	name, tab, id := -1, -1, -1
+	name, path := -1, -1
 	for i, l := range lines {
 		s := strings.TrimSpace(l)
 		switch {
 		case name < 0 && s == "p1":
 			name = i
-		case tab < 0 && s == "标签: 前端":
-			tab = i
-		case id < 0 && s == "w2:p1":
-			id = i
+		case path < 0 && strings.HasPrefix(s, "路径:"):
+			path = i
 		}
 	}
-	if name < 0 || tab < 0 || id < 0 || !(name < tab && tab < id) {
-		t.Fatalf("preview order name=%d tab=%d id=%d:\n%s", name, tab, id, strings.Join(lines, "\n"))
+	if name < 0 || path < 0 || !(name < path) {
+		t.Fatalf("preview order name=%d path=%d:\n%s", name, path, strings.Join(lines, "\n"))
+	}
+	if got := strings.TrimSpace(lines[path]); got != "路径: herdr / app / 前端 / p1" {
+		t.Fatalf("preview path = %q", got)
 	}
 
 	// A group row previews its contents instead of refusing to show anything.

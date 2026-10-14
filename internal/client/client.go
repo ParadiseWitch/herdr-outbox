@@ -130,6 +130,8 @@ func (c *Client) SetTarget(ctx context.Context, id string, target model.Target) 
 		Session:        target.Session,
 		Workspace:      target.Workspace,
 		WorkspaceLabel: target.WorkspaceLabel,
+		Tab:            target.Tab,
+		TabLabel:       target.TabLabel,
 		Pane:           target.Pane,
 		PaneLabel:      target.PaneLabel,
 		Agent:          target.Agent,
@@ -352,6 +354,8 @@ func toAPITarget(t model.Target) api.Target {
 		Session:        t.Session,
 		Workspace:      t.Workspace,
 		WorkspaceLabel: t.WorkspaceLabel,
+		Tab:            t.Tab,
+		TabLabel:       t.TabLabel,
 		Pane:           t.Pane,
 		PaneLabel:      t.PaneLabel,
 		Agent:          t.Agent,
@@ -393,6 +397,8 @@ func fromAPITarget(t api.Target) model.Target {
 		Session:        t.Session,
 		Workspace:      t.Workspace,
 		WorkspaceLabel: t.WorkspaceLabel,
+		Tab:            t.Tab,
+		TabLabel:       t.TabLabel,
 		Pane:           t.Pane,
 		PaneLabel:      t.PaneLabel,
 		Agent:          t.Agent,
@@ -461,6 +467,7 @@ func fromAPISnapshot(resp *api.SnapshotResponse) *herdr.Snapshot {
 			Focused:        p.Focused,
 			Ordinal:        p.Ordinal,
 			WsLabel:        p.WsLabel,
+			TabLabel:       p.TabLabel,
 		}
 	}
 	sessions := make([]herdr.Session, len(resp.Sessions))
