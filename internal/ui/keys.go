@@ -104,11 +104,21 @@ func (m *Model) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.restoreCursor()
 		return m, nil
 	case "2":
-		m.filter.Status = filterUnsent
+		m.filter.Status = filterDraft
 		m.persistTab()
 		m.restoreCursor()
 		return m, nil
 	case "3":
+		m.filter.Status = filterQueued
+		m.persistTab()
+		m.restoreCursor()
+		return m, nil
+	case "4":
+		m.filter.Status = filterScheduled
+		m.persistTab()
+		m.restoreCursor()
+		return m, nil
+	case "5":
 		m.filter.Status = filterSent
 		m.persistTab()
 		m.restoreCursor()

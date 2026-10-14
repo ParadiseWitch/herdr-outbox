@@ -90,9 +90,10 @@ func TestOldSavedCurrentTabMigrates(t *testing.T) {
 	if got := m.loadLastTab(); got != filterAll {
 		t.Fatalf("restored tab = %v, want the 全部 fallback", got)
 	}
-	// A first launch with no saved state opens on 未处理, the messages needing work.
-	if got := m.defaultTab(); got != filterUnsent {
-		t.Fatalf("default tab = %v, want unsent", got)
+	// A first launch with no saved state opens on 全部: with the lifecycle split
+	// across four tabs, no single one is the obvious default.
+	if got := m.defaultTab(); got != filterAll {
+		t.Fatalf("default tab = %v, want all", got)
 	}
 }
 
@@ -325,5 +326,70 @@ func TestWaitingRowShowsWhy(t *testing.T) {
 	view := ansi.Strip(m.View())
 	if !strings.Contains(view, "等待中: 该面板没有可等待的代理") {
 		t.Fatalf("waiting row hides the reason:\n%s", view)
+	}
+}
+
+// tabOf is the contract behind the five tabs. Every lifecycle state lands in
+// exactly one, and a message stays in the same tab as it moves Pending ->
+// Sending -> Sent rather than hopping: the split between 队列中 and 定时中 is by
+// trigger kind, not by the transient Sending status.
+func TestTabOfClassifiesEveryStatus(t *testing.T) {
+	withTrigger := func(s model.Status, k model.TriggerKind) *model.Message {
+		return &model.Message{Status: s, Trigger: model.Trigger{Kind: k}}
+	}
+	cases := []struct {
+		name string
+		msg  *model.Message
+		want filterMode
+	}{
+		{"draft", withTrigger(model.StatusDraft, model.TriggerManual), filterDraft},
+		{"failed is a draft", withTrigger(model.StatusFailed, model.TriggerAfterCompletion), filterDraft},
+		{"manual pending is queued", withTrigger(model.StatusPending, model.TriggerManual), filterQueued},
+		{"manual sending stays queued", withTrigger(model.StatusSending, model.TriggerManual), filterQueued},
+		{"after-completion waiting is queued", withTrigger(model.StatusWaiting, model.TriggerAfterCompletion), filterQueued},
+		{"scheduled is timed", withTrigger(model.StatusScheduled, model.TriggerScheduled), filterScheduled},
+		{"scheduled sending stays timed", withTrigger(model.StatusSending, model.TriggerScheduled), filterScheduled},
+		{"sent", withTrigger(model.StatusSent, model.TriggerScheduled), filterSent},
+	}
+	for _, tc := range cases {
+		if got := tabOf(tc.msg); got != tc.want {
+			t.Errorf("%s: tabOf = %s, want %s", tc.name, got.Label(), tc.want.Label())
+		}
+	}
+}
+
+// The five tabs partition every message: a message shows under exactly the one
+// tab tabOf assigns it, and under none other.
+func TestTabsPartitionTheList(t *testing.T) {
+	m, st, _ := newTestModel(t, 120, 40)
+	msgs := []*model.Message{
+		{Content: "d", Status: model.StatusDraft, Trigger: model.Trigger{Kind: model.TriggerManual}},
+		{Content: "f", Status: model.StatusFailed, Trigger: model.Trigger{Kind: model.TriggerManual}},
+		{Content: "q", Status: model.StatusPending, Trigger: model.Trigger{Kind: model.TriggerManual}},
+		{Content: "s", Status: model.StatusScheduled, Trigger: model.Trigger{Kind: model.TriggerScheduled}},
+		{Content: "x", Status: model.StatusSent, Trigger: model.Trigger{Kind: model.TriggerManual}},
+	}
+	for _, msg := range msgs {
+		if _, err := st.Create(msg); err != nil {
+			t.Fatal(err)
+		}
+	}
+	m.reload(t)
+	m.scopeFollow = false
+	tabs := []filterMode{filterDraft, filterQueued, filterScheduled, filterSent}
+	for _, tab := range tabs {
+		m.filter.Status = tab
+		seen := map[string]bool{}
+		for _, msg := range m.visible() {
+			seen[msg.Content] = true
+			if tabOf(msg) != tab {
+				t.Fatalf("tab %s showed %q which maps to %s", tab.Label(), msg.Content, tabOf(msg).Label())
+			}
+		}
+		for _, msg := range m.msgs {
+			if tabOf(msg) == tab && !seen[msg.Content] {
+				t.Fatalf("tab %s hid %q which maps to it", tab.Label(), msg.Content)
+			}
+		}
 	}
 }

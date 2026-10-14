@@ -152,7 +152,7 @@ func (m *Model) noticeView(width int) string {
 func (m *Model) listView(width, height int) string {
 	// Status tabs: the label comes from the mode itself, so the row and the
 	// header can never disagree about what a tab is called.
-	modes := []filterMode{filterAll, filterUnsent, filterSent}
+	modes := []filterMode{filterAll, filterDraft, filterQueued, filterScheduled, filterSent}
 	tabLine := []string{}
 	for i, mode := range modes {
 		label := mode.Label()
@@ -684,7 +684,7 @@ func (m *Model) helpView(width int) string {
 		{"i", "重命名标题（留空显示内容预览）"},
 		{"j k g G", "移动 · 跳转"},
 		{"tab h l ←→", "切换标签页"},
-		{"1-3", "全部/未处理/已发送"},
+		{"1-5", "全部/草稿/队列中/定时中/已发送"},
 		{"c", "清除筛选，显示所有会话的全部消息"},
 		{"s", "立即发送"},
 		{"t", "选择触发方式（手动、完成后、定时）"},

@@ -97,8 +97,8 @@ func TestScopeFollowsTheFocusedPaneOfThisSession(t *testing.T) {
 	}
 	// Scope (location) and the status tab (lifecycle) are independent dimensions,
 	// so the header names both when both are narrowed.
-	m.filter.Status = filterUnsent
-	if got := m.filterLabel(); got != "当前面板 default / 主区 / 标签 t1 / 本机面板 · 未处理" {
+	m.filter.Status = filterQueued
+	if got := m.filterLabel(); got != "当前面板 default / 主区 / 标签 t1 / 本机面板 · 队列中" {
 		t.Fatalf("filter label = %q, want scope and tab both named", got)
 	}
 }
@@ -145,7 +145,7 @@ func TestClearScopeRevealsEverySession(t *testing.T) {
 	m, _, _ := newTestModel(t, 120, 40)
 	m.snapshot = twoSessions(t)
 	m.scopeFollow = true
-	m.filter.Status = filterUnsent // both messages are pending, so the tab is not what limits the list
+	m.filter.Status = filterQueued // both messages are pending-manual, so the tab is not what limits the list
 	put(t, m, "主区消息", at("default"))
 	put(t, m, "笔记消息", at("note"))
 	m.reload(t)
@@ -163,7 +163,7 @@ func TestClearScopeRevealsEverySession(t *testing.T) {
 	}
 	// Clearing is a location action; the lifecycle tab is a different dimension
 	// and survives untouched.
-	if m.filter.Status != filterUnsent {
+	if m.filter.Status != filterQueued {
 		t.Fatalf("status tab after clearing = %v, want it left alone", m.filter.Status)
 	}
 	if label := m.scopeLabel(); label != "全部会话" {
@@ -178,7 +178,7 @@ func TestPinnedSelectionBeatsFollowingAndKeysBySession(t *testing.T) {
 	m, _, _ := newTestModel(t, 120, 40)
 	m.snapshot = twoSessions(t)
 	m.scopeFollow = true
-	m.filter.Status = filterUnsent
+	m.filter.Status = filterQueued
 	put(t, m, "主区消息", at("default"))
 	put(t, m, "笔记消息", at("note"))
 	m.reload(t)
@@ -198,7 +198,7 @@ func TestPinnedSelectionBeatsFollowingAndKeysBySession(t *testing.T) {
 	}
 	// Pinning is a location action; the lifecycle tab is a different dimension and
 	// is left exactly where the user had it.
-	if m.filter.Status != filterUnsent {
+	if m.filter.Status != filterQueued {
 		t.Fatalf("status tab after pinning = %v, want it left alone", m.filter.Status)
 	}
 }

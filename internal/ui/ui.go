@@ -47,14 +47,20 @@ type filterMode int
 
 const (
 	filterAll filterMode = iota
-	filterUnsent
+	filterDraft
+	filterQueued
+	filterScheduled
 	filterSent
 )
 
 func (f filterMode) Label() string {
 	switch f {
-	case filterUnsent:
-		return "未处理"
+	case filterDraft:
+		return "草稿"
+	case filterQueued:
+		return "队列中"
+	case filterScheduled:
+		return "定时中"
 	case filterSent:
 		return "已发送"
 	default:
@@ -64,8 +70,12 @@ func (f filterMode) Label() string {
 
 func (f filterMode) Name() string {
 	switch f {
-	case filterUnsent:
-		return "unsent"
+	case filterDraft:
+		return "draft"
+	case filterQueued:
+		return "queued"
+	case filterScheduled:
+		return "scheduled"
 	case filterSent:
 		return "sent"
 	default:
@@ -75,13 +85,36 @@ func (f filterMode) Name() string {
 
 func filterFromName(s string) filterMode {
 	switch s {
-	case "unsent":
-		return filterUnsent
+	case "draft":
+		return filterDraft
+	case "queued":
+		return filterQueued
+	case "scheduled":
+		return filterScheduled
 	case "sent":
 		return filterSent
 	default:
 		return filterAll
 	}
+}
+
+// tabOf is the one mapping from a message's lifecycle to the tab that shows it,
+// shared by the filter and the header so the two can never disagree. Drafts and
+// failures are "no trigger decided yet" and land together; everything still
+// waiting for its trigger is split by trigger kind -- a timed send under 定时中,
+// a manual or after-completion send under 队列中 -- so a message stays in one tab
+// as it moves Pending -> Sending -> Sent instead of hopping between them.
+func tabOf(msg *model.Message) filterMode {
+	switch msg.Status {
+	case model.StatusDraft, model.StatusFailed:
+		return filterDraft
+	case model.StatusSent:
+		return filterSent
+	}
+	if msg.Trigger.Kind == model.TriggerScheduled {
+		return filterScheduled
+	}
+	return filterQueued
 }
 
 type messageFilter struct {
@@ -280,11 +313,13 @@ func (m *Model) loadLastTab() filterMode {
 	return filterFromName(st.LastTab)
 }
 
-// defaultTab is what a first launch shows: 未处理, the messages still needing
-// attention. The location dimension is separate and lives in the scope, so the
-// default tab says nothing about which pane is shown.
+// defaultTab is what a first launch shows: 全部. With the lifecycle split across
+// four tabs, no single one is the obvious home, so the first view shows
+// everything rather than hiding messages the user has not seen yet. The location
+// dimension is separate and lives in the scope, so the default tab says nothing
+// about which pane is shown.
 func (m *Model) defaultTab() filterMode {
-	return filterUnsent
+	return filterAll
 }
 
 // clearScope drops every narrowing the user has applied to *location*, returning
@@ -559,15 +594,8 @@ func (m *Model) visible() []*model.Message {
 	out := make([]*model.Message, 0, len(m.msgs))
 	panes := m.scopePanes()
 	for _, msg := range m.msgs {
-		switch m.filter.Status {
-		case filterUnsent:
-			if msg.Status == model.StatusSent {
-				continue
-			}
-		case filterSent:
-			if msg.Status != model.StatusSent {
-				continue
-			}
+		if m.filter.Status != filterAll && tabOf(msg) != m.filter.Status {
+			continue
 		}
 		// Keys are qualified: two sessions can each own `w1:p1`, and a bare id
 		// would let one session's filter hide another's messages.
