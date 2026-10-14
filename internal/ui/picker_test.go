@@ -273,3 +273,41 @@ func TestTreePreviewLeadsWithPaneName(t *testing.T) {
 		t.Fatalf("group preview = %q", group)
 	}
 }
+
+// copyTargetIDs mirrors what the tree shows as selected: ticked panes win,
+// otherwise the cursor row -- a group yields its whole subtree. The result is
+// qualified ids, sorted, so the clipboard is stable for a given tree state.
+func TestCopyTargetIDs(t *testing.T) {
+	// Ticked selection wins over the cursor, and comes back sorted.
+	m := threeLevelModel(t)
+	m.openWorkspaceFilter()
+	m.picker.selectedPanes = map[string]bool{"w2:p1": true, "w1:p1": true}
+	putCursorOn(t, m, "w1:p2") // cursor is elsewhere; ticks must win
+	if got := strings.Join(m.copyTargetIDs(), " "); got != "w1:p1 w2:p1" {
+		t.Fatalf("ticked = %q, want the sorted selection", got)
+	}
+
+	// No ticks, cursor on a pane row: that pane alone.
+	m = threeLevelModel(t)
+	m.openWorkspaceFilter()
+	putCursorOn(t, m, "w1:p1")
+	if got := m.copyTargetIDs(); len(got) != 1 || got[0] != "w1:p1" {
+		t.Fatalf("pane cursor = %v, want [w1:p1]", got)
+	}
+
+	// No ticks, cursor on a group row: every pane beneath it.
+	m = threeLevelModel(t)
+	m.openWorkspaceFilter()
+	putCursorOn(t, m, "w1") // the workspace group
+	if got := strings.Join(m.copyTargetIDs(), " "); got != "w1:p1 w1:p2" {
+		t.Fatalf("group cursor = %q, want the whole subtree", got)
+	}
+
+	// A cursor past the end yields nothing rather than panicking.
+	m = threeLevelModel(t)
+	m.openWorkspaceFilter()
+	m.picker.cursor = len(m.picker.treeItems)
+	if got := m.copyTargetIDs(); len(got) != 0 {
+		t.Fatalf("out-of-range cursor = %v, want empty", got)
+	}
+}

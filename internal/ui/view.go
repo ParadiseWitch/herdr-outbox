@@ -540,7 +540,7 @@ func (m *Model) treePickerSplitView(width, bodyHeight int) string {
 func (m *Model) workspaceFilterSplitView(width, bodyHeight int) string {
 	leftW := treePanelWidth(width, 50, 35, 15)
 	leftPanel := padBlock(treeRows(&m.picker, leftW, bodyHeight, true,
-		"空格选择(整组可全选) · ↑↓ 移动 · ←→ 展开 · 回车确认 · esc 返回"), leftW, bodyHeight)
+		"空格选择(整组可全选) · y 复制id · ↑↓ 移动 · ←→ 展开 · 回车确认 · esc 返回"), leftW, bodyHeight)
 	rightPanel := m.workspaceFilterRightPanel(width-leftW-1, bodyHeight)
 	return treeSplitJoin(leftPanel, rightPanel, bodyHeight)
 }

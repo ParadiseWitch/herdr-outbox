@@ -2,8 +2,11 @@ package ui
 
 import (
 	"context"
+	"sort"
 	"strconv"
+	"strings"
 
+	"github.com/atotto/clipboard"
 	tea "github.com/charmbracelet/bubbletea"
 
 	"herdr-outbox/internal/herdr"
@@ -543,6 +546,22 @@ func (m *Model) onWorkspaceFilterKey(key string) (tea.Model, tea.Cmd) {
 			}
 		}
 		return m, nil
+	case "y":
+		ids := m.copyTargetIDs()
+		if len(ids) == 0 {
+			m.setNotice("没有可复制的面板 id")
+			return m, nil
+		}
+		if err := clipboard.WriteAll(strings.Join(ids, "\n")); err != nil {
+			m.setNotice("复制失败: " + err.Error())
+			return m, nil
+		}
+		if len(ids) == 1 {
+			m.setNotice("已复制面板 id: " + ids[0])
+		} else {
+			m.setNotice("已复制 " + strconv.Itoa(len(ids)) + " 个面板 id")
+		}
+		return m, nil
 	case "enter":
 		// A non-empty selection pins the list to exactly those panes; an empty one
 		// is the opposite instruction — show everything.
@@ -559,4 +578,33 @@ func (m *Model) onWorkspaceFilterKey(key string) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	return m, nil
+}
+
+// copyTargetIDs is the set of pane ids `y` copies out of the filter tree. It
+// mirrors what the tree treats as "selected": the space-ticked panes if any are
+// ticked, otherwise the row under the cursor -- a group row yields every pane
+// beneath it, a pane row yields itself. The ids are qualified (session/w1:p1),
+// the only form that means one terminal across sessions and the form `target`
+// accepts on the command line. Sorted so the same tree state always yields the
+// same clipboard.
+func (m *Model) copyTargetIDs() []string {
+	var ids []string
+	switch {
+	case len(m.picker.selectedPanes) > 0:
+		ids = make([]string, 0, len(m.picker.selectedPanes))
+		for id := range m.picker.selectedPanes {
+			ids = append(ids, id)
+		}
+	default:
+		if m.picker.cursor < len(m.picker.treeItems) {
+			item := m.picker.treeItems[m.picker.cursor]
+			if item.isParent {
+				ids = append(ids, item.paneIDs...)
+			} else {
+				ids = append(ids, item.key)
+			}
+		}
+	}
+	sort.Strings(ids)
+	return ids
 }
