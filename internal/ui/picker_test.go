@@ -60,26 +60,29 @@ func treeRowsOf(items []treeItem) string {
 
 const targetTreeRows = "0:herdr 1:研究 2:代码 3:p1 2:标签 t2 1:app"
 
-func press(t *testing.T, m *Model, msg tea.KeyMsg) {
+// press runs one keystroke and hands back the command Update produced. Update's
+// second return is a tea.Cmd, not an error -- treating it as an error made every
+// key that returns a command (clone, send, anything that reloads) fatal, so the
+// helper only ever worked for no-op keys.
+func press(t *testing.T, m *Model, msg tea.KeyMsg) tea.Cmd {
 	t.Helper()
-	if _, err := m.Update(msg); err != nil {
-		t.Fatal(err)
-	}
+	_, cmd := m.Update(msg)
+	return cmd
 }
 
-func pressRune(t *testing.T, m *Model, r rune) {
+func pressRune(t *testing.T, m *Model, r rune) tea.Cmd {
 	t.Helper()
-	press(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	return press(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
 }
 
-func pressEnter(t *testing.T, m *Model) {
+func pressEnter(t *testing.T, m *Model) tea.Cmd {
 	t.Helper()
-	press(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	return press(t, m, tea.KeyMsg{Type: tea.KeyEnter})
 }
 
-func pressSpace(t *testing.T, m *Model) {
+func pressSpace(t *testing.T, m *Model) tea.Cmd {
 	t.Helper()
-	press(t, m, tea.KeyMsg{Type: tea.KeySpace})
+	return press(t, m, tea.KeyMsg{Type: tea.KeySpace})
 }
 
 func putCursorOn(t *testing.T, m *Model, key string) {

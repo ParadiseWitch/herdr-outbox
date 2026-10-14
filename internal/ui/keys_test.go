@@ -4,8 +4,6 @@ import (
 	"context"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
-
 	"herdr-outbox/internal/herdr"
 	"herdr-outbox/internal/model"
 )
@@ -49,10 +47,8 @@ func TestClearKeyIsCAndCloneKeyIsY(t *testing.T) {
 		t.Fatalf("c cloned: %d messages, want the original 2", len(m.msgs))
 	}
 
-	// y clones the selected message into a draft. Update is called directly
-	// because clone returns a reload command, which `press` would misread as an
-	// error; the clone itself is already persisted by the time it returns.
-	if _, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")}); cmd == nil {
+	// y clones the selected message into a draft and asks for a reload.
+	if cmd := pressRune(t, m, 'y'); cmd == nil {
 		t.Fatal("y returned no reload command; the clone did not run")
 	}
 	m.reload(t)
