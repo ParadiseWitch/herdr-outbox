@@ -212,6 +212,12 @@ func listWindow(cursor, n, height int) window {
 }
 
 func (m *Model) listRows(msg *model.Message, width int, selected bool) []string {
+	// The queue badge replaces the leading gutter (never adds a column) so every
+	// row keeps the exact width the frame math assumes; unranked rows keep a blank.
+	badge := " "
+	if r := m.queueRank(msg); r > 0 {
+		badge = circled(r)
+	}
 	glyph := msg.Status.Glyph()
 	fav := " "
 	if msg.Favorite {
@@ -225,7 +231,7 @@ func (m *Model) listRows(msg *model.Message, width int, selected bool) []string 
 		title = "(新消息)"
 	}
 	title = truncateWidth(title, width-7)
-	row := " " + glyph + fav + " " + title
+	row := badge + glyph + fav + " " + title
 	if selected {
 		row = stSelected.Render(pad(row, width-1))
 	} else {
@@ -235,6 +241,52 @@ func (m *Model) listRows(msg *model.Message, width int, selected bool) []string 
 	// divider between the panels lands a column off on one of them.
 	meta := pad("   "+truncateWidth(m.metaFor(msg), width-4), width-1)
 	return []string{row, stDim.Render(meta)}
+}
+
+// queueRank is a message's 1-based position in its pane's completion queue, or 0
+// if it is not queued. It ranks by QueuePos so the badge matches send order.
+func (m *Model) queueRank(msg *model.Message) int {
+	if msg.Trigger.Kind != model.TriggerAfterCompletion ||
+		(msg.Status != model.StatusWaiting && msg.Status != model.StatusFailed) {
+		return 0
+	}
+	key := queueKeyOf(msg.Target)
+	rank := 1
+	for _, other := range m.msgs {
+		if other.ID == msg.ID {
+			continue
+		}
+		if other.Trigger.Kind == model.TriggerAfterCompletion &&
+			(other.Status == model.StatusWaiting || other.Status == model.StatusFailed) &&
+			queueKeyOf(other.Target) == key && beforeInQueue(other, msg) {
+			rank++
+		}
+	}
+	return rank
+}
+
+// queueKeyOf and beforeInQueue mirror the scheduler's unexported helpers so the
+// badge and the engine's send order agree without the ui importing internals.
+func queueKeyOf(t model.Target) string { return herdr.Qualify(t.Session, t.Pane) }
+
+func beforeInQueue(a, b *model.Message) bool {
+	switch {
+	case a.QueuePos != b.QueuePos:
+		return a.QueuePos < b.QueuePos
+	case !a.CreatedAt.Equal(b.CreatedAt):
+		return a.CreatedAt.Before(b.CreatedAt)
+	default:
+		return a.ID < b.ID
+	}
+}
+
+// circled renders 1..20 as ①..⑳; larger ranks fall back to "#N". Each is one
+// rune in the gutter, so title and meta lines stay aligned.
+func circled(n int) string {
+	if n >= 1 && n <= 20 {
+		return string(rune(0x2460 + n - 1))
+	}
+	return "#" + strconv.Itoa(n)
 }
 
 // panePath is the one formatter behind every place a target is shown, so the
