@@ -25,6 +25,7 @@ type DataProvider interface {
 	SendNow(ctx context.Context, id string) ([]scheduler.Event, error)
 	SetTrigger(ctx context.Context, id string, kind model.TriggerKind, sendAt *time.Time) (*model.Message, error)
 	SetTarget(ctx context.Context, id string, target model.Target) (*model.Message, error)
+	SetQueuePos(ctx context.Context, id string, delta int) (*model.Message, error)
 
 	Snapshot(ctx context.Context) (*herdr.Snapshot, error)
 	BackendName() string

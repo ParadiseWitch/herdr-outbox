@@ -90,6 +90,10 @@ func (p *LocalProvider) SetTarget(ctx context.Context, id string, target model.T
 	return p.Engine.SetTarget(ctx, id, target)
 }
 
+func (p *LocalProvider) SetQueuePos(ctx context.Context, id string, delta int) (*model.Message, error) {
+	return p.Engine.SetQueuePos(ctx, id, delta)
+}
+
 func (p *LocalProvider) Snapshot(ctx context.Context) (*herdr.Snapshot, error) {
 	return p.Engine.Snapshot(ctx)
 }
