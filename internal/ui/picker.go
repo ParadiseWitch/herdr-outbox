@@ -51,7 +51,7 @@ func (m *Model) openTargetPicker(ctx context.Context, sel *model.Message) {
 	if m.snapshot == nil || len(m.snapshot.Panes) == 0 {
 		m.setNotice("herdr 状态不可用；按 r 刷新")
 		if m.snapErr != nil {
-			m.setNotice("herdr 不可用: " + m.snapErr.Error())
+			m.setNotice("herdr 不可用：" + m.snapErr.Error())
 		}
 		return
 	}
@@ -459,7 +459,7 @@ func (m *Model) applyTarget(t model.Target) (tea.Model, tea.Cmd) {
 	m.mode = modeBrowse
 	ctx := context.Background()
 	if _, err := m.provider.SetTarget(ctx, id, t); err != nil {
-		m.setNotice("目标更改失败: " + err.Error())
+		m.setNotice("目标更改失败：" + err.Error())
 		return m, m.loadMsg()
 	}
 	m.setNotice("目标已设为 " + m.targetLabel(t))
@@ -470,7 +470,7 @@ func (m *Model) applyTarget(t model.Target) (tea.Model, tea.Cmd) {
 // multi-select filtering.
 func (m *Model) openWorkspaceFilter() {
 	if m.snapshot == nil || len(m.snapshot.Panes) == 0 {
-		m.setNotice("herdr 状态不可用;按 r 刷新")
+		m.setNotice("herdr 状态不可用；按 r 刷新")
 		return
 	}
 	m.mode = modeWorkspaceFilter
@@ -551,10 +551,10 @@ func (m *Model) onWorkspaceFilterKey(key string) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if err := clipboard.WriteAll(id); err != nil {
-			m.setNotice("复制失败: " + err.Error())
+			m.setNotice("复制失败：" + err.Error())
 			return m, nil
 		}
-		m.setNotice("已复制" + kind + " id: " + id)
+		m.setNotice("已复制" + kind + " id：" + id)
 		return m, nil
 	case "enter":
 		// A non-empty selection pins the list to exactly those panes; an empty one
@@ -568,7 +568,7 @@ func (m *Model) onWorkspaceFilterKey(key string) (tea.Model, tea.Cmd) {
 		m.picker = picker{}
 		m.mode = modeBrowse
 		m.restoreCursor()
-		m.setNotice("筛选: " + m.filterLabel())
+		m.setNotice("筛选：" + m.filterLabel())
 		return m, nil
 	}
 	return m, nil

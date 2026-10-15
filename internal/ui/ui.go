@@ -339,7 +339,7 @@ func (m *Model) clearScope() {
 	m.scopeFollow = false
 	m.picker.selectedPanes = nil
 	m.restoreCursor()
-	m.setNotice("已清除筛选: 显示全部会话消息")
+	m.setNotice("已清除筛选：显示全部会话消息")
 }
 
 func (m *Model) persistTab() {
@@ -527,7 +527,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.appendEvents(msg.events)
 		}
 		if msg.err != nil {
-			m.setNotice("发送失败: " + msg.err.Error())
+			m.setNotice("发送失败：" + msg.err.Error())
 		}
 		return m, m.loadMsg()
 

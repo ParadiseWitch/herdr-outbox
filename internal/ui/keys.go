@@ -247,7 +247,7 @@ func (m *Model) onConfirmKey(key string) (tea.Model, tea.Cmd) {
 	case "y", "Y", "enter":
 		if sel != nil {
 			if err := m.provider.DeleteMessage(context.Background(), sel.ID); err != nil {
-				m.setNotice("删除失败: " + err.Error())
+				m.setNotice("删除失败：" + err.Error())
 			} else {
 				m.setNotice("已删除 " + sel.Summary())
 				m.selectedID = ""
@@ -274,7 +274,7 @@ func (m *Model) newMessage(ctx context.Context) (tea.Model, tea.Cmd) {
 	}
 	created, err := m.provider.CreateMessage(ctx, msg)
 	if err != nil {
-		m.setNotice("创建失败: " + err.Error())
+		m.setNotice("创建失败：" + err.Error())
 		return m, nil
 	}
 	m.selectedID = created.ID
@@ -330,7 +330,7 @@ func (m *Model) cloneMessage(src *model.Message) (tea.Model, tea.Cmd) {
 	}
 	created, err := m.provider.CreateMessage(context.Background(), &dup)
 	if err != nil {
-		m.setNotice("克隆失败: " + err.Error())
+		m.setNotice("克隆失败：" + err.Error())
 		return m, nil
 	}
 	m.selectedID = created.ID
@@ -342,7 +342,7 @@ func (m *Model) toggleFavorite(sel *model.Message) (tea.Model, tea.Cmd) {
 	sel.Favorite = !sel.Favorite
 	fav := sel.Favorite
 	if _, err := m.provider.UpdateMessage(context.Background(), sel.ID, api.UpdateRequest{Favorite: &fav}); err != nil {
-		m.setNotice("保存失败: " + err.Error())
+		m.setNotice("保存失败：" + err.Error())
 	}
 	return m, m.loadMsg()
 }
@@ -351,15 +351,15 @@ func (m *Model) toggleFavorite(sel *model.Message) (tea.Model, tea.Cmd) {
 // case in the brief.
 func (m *Model) park(sel *model.Message) (tea.Model, tea.Cmd) {
 	if sel.Status == model.StatusSending {
-		m.setNotice("此消息正在发送中")
+		m.setNotice("消息正在发送中")
 		return m, nil
 	}
 	draft := string(model.StatusDraft)
 	if _, err := m.provider.UpdateMessage(context.Background(), sel.ID, api.UpdateRequest{Status: &draft}); err != nil {
-		m.setNotice("保存失败: " + err.Error())
+		m.setNotice("保存失败：" + err.Error())
 		return m, m.loadMsg()
 	}
-	m.setNotice("已暂存为草稿: " + sel.Summary())
+	m.setNotice("已存为草稿：" + sel.Summary())
 	return m, m.loadMsg()
 }
 
@@ -376,7 +376,7 @@ func (m *Model) sendNow(sel *model.Message) (tea.Model, tea.Cmd) {
 		m.deferTick = true
 	}
 	id := sel.ID
-	m.setNotice("正在发送 " + sel.Summary() + " 到 " + m.targetDisplay(sel))
+	m.setNotice("发送中 " + sel.Summary() + " → " + m.targetDisplay(sel))
 	return m, func() tea.Msg {
 		evs, err := m.provider.SendNow(context.Background(), id)
 		return sendDoneMsg{id: id, events: evs, err: err}
@@ -506,10 +506,10 @@ func (m *Model) setTriggerFor(id string, kind model.TriggerKind, sendAt *time.Ti
 	}
 	ctx := context.Background()
 	if _, err := m.provider.SetTrigger(ctx, id, kind, sendAt); err != nil {
-		m.setNotice("触发设置失败: " + err.Error())
+		m.setNotice("触发设置失败：" + err.Error())
 		return m, m.loadMsg()
 	}
-	m.setNotice("触发方式已设为: " + kind.Label())
+	m.setNotice("触发已设为：" + kind.Label())
 	return m, tea.Batch(m.loadMsg(), m.snapshotCmd())
 }
 
@@ -533,7 +533,7 @@ func (m *Model) openSchedulePrompt(id string) (tea.Model, tea.Cmd) {
 
 func (m *Model) afterEdit(msg editorDoneMsg) (tea.Model, tea.Cmd) {
 	if msg.err != nil {
-		m.setNotice("编辑器异常退出: " + msg.err.Error())
+		m.setNotice("编辑器异常退出：" + msg.err.Error())
 	}
 	before := m.byID(msg.id)
 	verb := "已重新加载"
@@ -552,22 +552,22 @@ func (m *Model) afterEdit(msg editorDoneMsg) (tea.Model, tea.Cmd) {
 	if lp, ok := m.provider.(*LocalProvider); ok {
 		updated, err := lp.Store.ReloadFromDisk(msg.id, orMessage(before))
 		if err != nil {
-			m.setNotice("重新加载失败: " + err.Error())
+			m.setNotice("重新加载失败：" + err.Error())
 			return m, m.loadMsg()
 		}
 		if updated.Trigger.Kind != model.TriggerManual && updated.Status.Armed() {
 			if _, err := lp.Engine.Arm(ctx, updated); err != nil && !herdr.IsUnavailable(err) {
-				m.setNotice("重新设置失败: " + err.Error())
+				m.setNotice("重新设置失败：" + err.Error())
 			}
 			if err := lp.Store.Save(updated); err != nil {
-				m.setNotice("保存失败: " + err.Error())
+				m.setNotice("保存失败：" + err.Error())
 			}
 		}
 		m.setNotice(fmt.Sprintf("%s %s (%d 行)", verb, updated.ID, len(updated.BodyLines())))
 	} else {
 		updated, err := m.provider.GetMessage(ctx, msg.id)
 		if err != nil {
-			m.setNotice("重新加载失败: " + err.Error())
+			m.setNotice("重新加载失败：" + err.Error())
 			return m, m.loadMsg()
 		}
 		m.setNotice(fmt.Sprintf("%s %s (%d 行)", verb, updated.ID, len(updated.BodyLines())))
@@ -659,7 +659,7 @@ func (m *Model) commitRename() (tea.Model, tea.Cmd) {
 	m.renameInput = ""
 	ctx := context.Background()
 	if _, err := m.provider.UpdateMessage(ctx, id, api.UpdateRequest{Title: &title}); err != nil {
-		m.setNotice("重命名失败: " + err.Error())
+		m.setNotice("重命名失败：" + err.Error())
 		return m, m.loadMsg()
 	}
 	if title == "" {
