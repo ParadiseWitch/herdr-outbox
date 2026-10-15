@@ -25,10 +25,15 @@ type picker struct {
 	// cursor is the selected row in whichever list the picker shows.
 	cursor int
 	// target is the message id being changed.
-	target       string
-	awaitingTime bool
-	input        string
-	prompt       string
+	target string
+	// afterTargetTrigger, when set, is the trigger to adopt once the user picks a
+	// target for a message that had none. A new message created from the 队列中
+	// tab with no default pane carries after_completion here so the picker hands
+	// off to setTriggerFor instead of dropping the trigger.
+	afterTargetTrigger model.TriggerKind
+	awaitingTime       bool
+	input              string
+	prompt             string
 
 	// panePreview holds the preview content for the currently selected pane.
 	panePreview     string
@@ -455,6 +460,7 @@ type panePreviewMsg struct {
 
 func (m *Model) applyTarget(t model.Target) (tea.Model, tea.Cmd) {
 	id := m.picker.target
+	kind := m.picker.afterTargetTrigger
 	m.picker = picker{}
 	m.mode = modeBrowse
 	ctx := context.Background()
@@ -462,7 +468,16 @@ func (m *Model) applyTarget(t model.Target) (tea.Model, tea.Cmd) {
 		m.setNotice("目标更改失败：" + err.Error())
 		return m, m.loadMsg()
 	}
+	// Sync the cached row so a trigger adopted below sees the new target: the
+	// completion trigger refuses to arm a message whose pane is still blank, and
+	// the reload that would refresh the cache has not run yet.
+	if sel := m.byID(id); sel != nil {
+		sel.Target = t
+	}
 	m.setNotice("目标已设为 " + m.targetLabel(t))
+	if kind != "" {
+		return m.setTriggerFor(id, kind, nil)
+	}
 	return m, tea.Batch(m.loadMsg(), m.snapshotCmd())
 }
 

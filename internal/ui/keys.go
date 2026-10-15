@@ -601,6 +601,18 @@ func (m *Model) afterEdit(msg editorDoneMsg) (tea.Model, tea.Cmd) {
 		if cur, cerr := m.provider.GetMessage(ctx, msg.id); cerr == nil && strings.TrimSpace(cur.Content) != "" {
 			switch deferTrigger {
 			case model.TriggerAfterCompletion:
+				// A popup with no focused pane has nowhere to send yet. Send the
+				// user straight to the target picker and remember to adopt
+				// after_completion once a pane is chosen, rather than silently
+				// dropping the queue trigger and leaving a manual draft.
+				if cur.Target.Pane == "" {
+					m.openTargetPicker(ctx, cur)
+					if m.mode == modeTargetPicker {
+						m.picker.afterTargetTrigger = model.TriggerAfterCompletion
+						m.setNotice("为新消息选目标面板；选好后自动排队尾")
+						return m, nil
+					}
+				}
 				return m.setTriggerFor(msg.id, model.TriggerAfterCompletion, nil)
 			case model.TriggerScheduled:
 				return m.openSchedulePrompt(msg.id)

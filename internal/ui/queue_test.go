@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/ansi"
 	"herdr-outbox/internal/model"
 )
@@ -171,4 +172,88 @@ func findMsg(m *Model, id string) *model.Message {
 		}
 	}
 	return nil
+}
+
+// A message created from the 队列中 tab with no default pane (the popup case)
+// must not silently drop the queue trigger. It hands the user straight to the
+// target picker and, once a pane is chosen, adopts after_completion at the end of
+// that pane's queue.
+func TestNewFromQueuePromptsForTargetThenQueues(t *testing.T) {
+	m, st, _ := newTestModel(t, 100, 40)
+	m.scopeFollow = false
+	// Two existing queued messages on w1:p1 so "end of queue" is observable.
+	putQueued(t, m, "已有1", 1)
+	putQueued(t, m, "已有2", 2)
+
+	// Popup: no currentPane, so defaultTarget is empty.
+	m.filter.Status = filterQueued
+	m.reload(t)
+	m = sendKey(t, m, typed("n"), 8)
+	m = sendKey(t, m, typed("新消息"), 4)
+	m = sendKey(t, m, tea.KeyMsg{Type: tea.KeyCtrlS}, 12)
+
+	// Saving a queue message with no pane opens the target picker instead of
+	// falling back to a manual draft.
+	if m.mode != modeTargetPicker {
+		t.Fatalf("mode after save = %v, want modeTargetPicker", m.mode)
+	}
+	if m.picker.afterTargetTrigger != model.TriggerAfterCompletion {
+		t.Fatalf("pending trigger = %q, want after_completion", string(m.picker.afterTargetTrigger))
+	}
+
+	// Pick w1:p1 (applyTarget is the seam the picker's enter key calls); the
+	// message should land at the end of that pane's queue.
+	next, cmd := m.applyTarget(model.Target{Workspace: "w1", Pane: "w1:p1", Tab: "w1:t1"})
+	m = pump(t, next.(*Model), cmd, 16)
+	m.reload(t)
+
+	msgs, _ := st.List()
+	var created *model.Message
+	for _, msg := range msgs {
+		if strings.HasPrefix(msg.Content, "新消息") {
+			created = msg
+		}
+	}
+	if created == nil {
+		t.Fatal("new message not found")
+	}
+	if created.Trigger.Kind != model.TriggerAfterCompletion {
+		t.Fatalf("trigger = %q, want after_completion", string(created.Trigger.Kind))
+	}
+	if created.Status != model.StatusWaiting {
+		t.Fatalf("status = %v, want waiting", created.Status)
+	}
+	if created.QueuePos != 3 {
+		t.Fatalf("queue pos = %d, want 3 (end of w1:p1)", created.QueuePos)
+	}
+}
+
+// With a default pane present (running inside a pane), the same flow must NOT
+// interrupt with a picker -- it queues directly at the end.
+func TestNewFromQueueWithPaneQueuesDirectly(t *testing.T) {
+	m, st, _ := newTestModel(t, 100, 40)
+	m.scopeFollow = false
+	m.currentPane = "w1:p1"
+	putQueued(t, m, "已有1", 1)
+
+	m.filter.Status = filterQueued
+	m.reload(t)
+	m = sendKey(t, m, typed("n"), 8)
+	m = sendKey(t, m, typed("直排"), 4)
+	m = sendKey(t, m, tea.KeyMsg{Type: tea.KeyCtrlS}, 12)
+
+	if m.mode != modeBrowse {
+		t.Fatalf("mode after save = %v, want modeBrowse (no picker)", m.mode)
+	}
+	msgs, _ := st.List()
+	for _, msg := range msgs {
+		if strings.HasPrefix(msg.Content, "直排") {
+			if msg.Trigger.Kind != model.TriggerAfterCompletion || msg.QueuePos != 2 {
+				t.Fatalf("queued directly: kind=%q pos=%d, want after_completion pos=2",
+					string(msg.Trigger.Kind), msg.QueuePos)
+			}
+			return
+		}
+	}
+	t.Fatal("new message not found")
 }
