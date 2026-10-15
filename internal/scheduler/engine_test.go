@@ -2,6 +2,7 @@ package scheduler
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -801,5 +802,38 @@ func TestCompletionQueueChainsAcrossEdges(t *testing.T) {
 	}
 	if f.reload(succ.ID).Status != model.StatusSent {
 		t.Fatalf("successor not sent: %v", f.reload(succ.ID).Status)
+	}
+}
+
+// A failed head halts the pane's chain: the successor must NOT auto-advance past
+// an undelivered predecessor. Retrying the head with s resumes it.
+func TestFailedHeadFreezesChain(t *testing.T) {
+	f := newFixture(t)
+	head := f.arm(f.newMsg("head\n", target, model.TriggerAfterCompletion))
+	succ := f.arm(f.newMsg("succ\n", target, model.TriggerAfterCompletion))
+
+	f.fake.FailSend = errors.New("boom")
+	f.driveCompletion("w1:p1") // head tries to send and fails
+	if got := f.reload(head.ID); got.Status != model.StatusFailed {
+		t.Fatalf("head status = %v, want failed", got.Status)
+	}
+	if got := f.reload(head.ID); got.QueuePos == 0 {
+		t.Fatal("a failed head must keep its slot")
+	}
+	if got := f.reload(succ.ID); got.Status != model.StatusWaiting {
+		t.Fatalf("successor advanced past a failed head: %v", got.Status)
+	}
+
+	// Recover: allow sends, retry the head explicitly; on success the chain resumes.
+	f.fake.FailSend = nil
+	if _, err := f.engine.SendNow(context.Background(), head.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.reload(head.ID); got.Status != model.StatusSent {
+		t.Fatalf("head after retry = %v, want sent", got.Status)
+	}
+	f.driveCompletion("w1:p1")
+	if got := f.reload(succ.ID); got.Status != model.StatusSent {
+		t.Fatalf("successor never resumed after head recovered: %v", got.Status)
 	}
 }
