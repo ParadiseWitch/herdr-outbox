@@ -716,3 +716,57 @@ func TestComputeQueue(t *testing.T) {
 		t.Fatal("w1:p2 wrongly frozen")
 	}
 }
+
+// First arm of an after_completion message on a pane takes the next slot; a
+// re-arm keeps its slot so a retried head returns to its original place.
+func TestQueuePosAssignment(t *testing.T) {
+	f := newFixture(t)
+	a := f.arm(f.newMsg("a\n", target, model.TriggerAfterCompletion))
+	b := f.arm(f.newMsg("b\n", target, model.TriggerAfterCompletion))
+	if a.QueuePos != 1 || b.QueuePos != 2 {
+		t.Fatalf("assignment: a=%d b=%d, want 1,2", a.QueuePos, b.QueuePos)
+	}
+	// Re-arm b (e.g. target re-set): position is preserved.
+	if _, err := f.engine.SetTarget(context.Background(), b.ID, b.Target); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.reload(b.ID).QueuePos; got != 2 {
+		t.Fatalf("re-arm changed position: %d, want 2", got)
+	}
+	// A manual message never gets a slot.
+	m := f.newMsg("m\n", target, model.TriggerManual)
+	if _, err := f.engine.Arm(context.Background(), m); err != nil {
+		t.Fatal(err)
+	}
+	if m.QueuePos != 0 {
+		t.Fatalf("manual message got QueuePos %d, want 0", m.QueuePos)
+	}
+}
+
+// Sending a queued message clears its slot so the pane's queue compacts on the
+// next completion; a failed send keeps the slot (the chain stays frozen on it).
+func TestQueuePosClearedOnSent(t *testing.T) {
+	f := newFixture(t)
+	a := f.arm(f.newMsg("a\n", target, model.TriggerAfterCompletion))
+	if _, err := f.engine.SendNow(context.Background(), a.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.reload(a.ID); got.QueuePos != 0 || got.Status != model.StatusSent {
+		t.Fatalf("after send: pos=%d status=%v, want 0/sent", got.QueuePos, got.Status)
+	}
+}
+
+// Moving a queued message to a different pane drops its old slot and takes a
+// fresh one on the new pane.
+func TestQueuePosResetOnPaneChange(t *testing.T) {
+	f := newFixture(t)
+	f.fake.SetStatus("w1:p2", herdr.StatusWorking)                    // make the target pane trackable
+	a := f.arm(f.newMsg("a\n", target, model.TriggerAfterCompletion)) // w1:p1, pos 1
+	if _, err := f.engine.SetTarget(context.Background(), a.ID,
+		model.Target{Workspace: "w1", Pane: "w1:p2"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.reload(a.ID); got.QueuePos != 1 {
+		t.Fatalf("after moving to empty w1:p2: pos=%d, want fresh 1", got.QueuePos)
+	}
+}

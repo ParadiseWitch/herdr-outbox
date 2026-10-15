@@ -280,6 +280,27 @@ func queueKey(m *model.Message) string {
 	return herdr.Qualify(m.Target.Session, m.Target.Pane)
 }
 
+// queueKeyOfTarget is the pane key a target points at, for comparing a message's
+// current pane against a proposed one before the target is overwritten.
+func queueKeyOfTarget(t model.Target) string { return herdr.Qualify(t.Session, t.Pane) }
+
+// nextQueuePos is one past the highest slot currently in use on a pane, among
+// messages still waiting or failed. Reads the live store so concurrent arms in
+// one tick each get a distinct slot.
+func (e *Engine) nextQueuePos(key string) int {
+	msgs, err := e.Store.List()
+	if err != nil {
+		return 1
+	}
+	max := 0
+	for _, m := range msgs {
+		if queued(m) && queueKey(m) == key && m.QueuePos > max {
+			max = m.QueuePos
+		}
+	}
+	return max + 1
+}
+
 // queued reports whether this message participates in a completion queue.
 func queued(m *model.Message) bool {
 	return m.Trigger.Kind == model.TriggerAfterCompletion &&
@@ -508,6 +529,14 @@ func (e *Engine) armFrom(m *model.Message, snap *herdr.Snapshot) (*herdr.Pane, e
 			return &pane, fmt.Errorf("%s 上没有可识别的代理（状态 %s），没有\"完成\"可等待；请用 s 立即发送", snap.PanePath(m.Target, true), orNone(pane.AgentStatus))
 		}
 	}
+	// Manage queue membership. Only after_completion messages hold a slot; a
+	// message that changes trigger kind drops its slot, and a re-arm of the same
+	// queued message keeps its original slot (QueuePos != 0 is left untouched).
+	if m.Trigger.Kind != model.TriggerAfterCompletion {
+		m.QueuePos = 0
+	} else if m.QueuePos == 0 {
+		m.QueuePos = e.nextQueuePos(queueKey(m))
+	}
 	m.BaselineSeq = pane.StateChangeSeq
 	m.BaselineSet = true
 	m.ObservedWorking = pane.AgentStatus == herdr.StatusWorking
@@ -550,6 +579,12 @@ func (e *Engine) SetTarget(ctx context.Context, id string, t model.Target) (*mod
 	}
 	if m.Status == model.StatusSending {
 		return nil, errors.New("send in progress")
+	}
+	// Moving to a different pane makes the old slot meaningless: drop it so the
+	// arm below takes a fresh slot on the new pane. Compared before m.Target is
+	// overwritten, otherwise both keys are already the new pane.
+	if queueKey(m) != queueKeyOfTarget(t) {
+		m.QueuePos = 0
 	}
 	m.Target = t
 	if _, err := e.Arm(ctx, m); err != nil && !herdr.IsUnavailable(err) {
@@ -598,6 +633,7 @@ func (e *Engine) dispatchLocked(ctx context.Context, m *model.Message, snap *her
 			m.Status = model.StatusSent
 			m.SentAt = &rec.TS
 			m.SentVia = rec.Surface
+			m.QueuePos = 0 // already delivered: leave the queue too
 			return []Event{{Kind: EventSkipped, MessageID: m.ID, Title: m.Summary(),
 				Detail: "此版本已于 " + rec.TS.Format("15:04:05") + " 送达", At: now}}, e.saveState(m)
 		}
@@ -651,6 +687,7 @@ func (e *Engine) dispatchLocked(ctx context.Context, m *model.Message, snap *her
 	m.SentVia = result.Surface
 	m.LastError = ""
 	m.SettleSince = nil
+	m.QueuePos = 0 // delivered: leave the queue so the pane compacts
 	detail := "通过 " + result.Surface
 	if result.Warning != "" {
 		detail += "; " + result.Warning
