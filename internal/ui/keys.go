@@ -278,12 +278,39 @@ func (m *Model) newMessage(ctx context.Context) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	m.selectedID = created.ID
+	// Creating from a lifecycle tab pre-selects that tab's trigger, so a message
+	// you start while looking at 队列中 or 定时中 lands back there instead of in
+	// 草稿. Deferred to afterEdit because a scheduled trigger needs a send_at and
+	// an after_completion one needs content + target, none of which a fresh draft
+	// has yet. 全部/草稿/已发送 keep the manual default.
+	m.pendingTrigger, m.pendingTriggerID = triggerForTab(m.filter.Status), created.ID
 	note := "编辑中 " + created.ID
+	switch m.pendingTrigger {
+	case model.TriggerAfterCompletion:
+		note += "（保存后设为完成后发送）"
+	case model.TriggerScheduled:
+		note += "（保存后设置发送时间）"
+	}
 	if !created.Target.Empty() {
 		note += " · 目标 " + m.targetDisplay(created) + "（按 p 可改）"
 	}
 	m.setNotice(note)
 	return m, tea.Batch(m.loadMsg(), m.editCmd(created.ID))
+}
+
+// triggerForTab is the trigger a new message adopts when created from a lifecycle
+// tab, so the tab it lands in matches where you started it. 队列中 means "waiting
+// on the agent", hence after_completion; 定时中 is the clock. The other tabs have
+// no single trigger to imply, so they keep the manual default.
+func triggerForTab(tab filterMode) model.TriggerKind {
+	switch tab {
+	case filterQueued:
+		return model.TriggerAfterCompletion
+	case filterScheduled:
+		return model.TriggerScheduled
+	default:
+		return model.TriggerManual
+	}
 }
 
 func targetOf(p herdr.Pane) model.Target { return p.Target() }
@@ -442,6 +469,14 @@ func (m *Model) confirmSchedule(key string) (tea.Model, tea.Cmd) {
 		}
 		return m.applyTrigger(model.TriggerScheduled, at)
 	case "esc":
+		// Reached from the trigger list: go back to it. Reached directly (a new
+		// message from the 定时中 tab): there is no list behind us, so leave the
+		// picker entirely rather than strand the user on an empty one.
+		if len(p.items) == 0 {
+			m.picker = picker{}
+			m.mode = modeBrowse
+			return m, m.loadMsg()
+		}
 		p.awaitingTime = false
 		p.input = ""
 		p.prompt = ""
@@ -456,15 +491,19 @@ func (m *Model) confirmSchedule(key string) (tea.Model, tea.Cmd) {
 
 func (m *Model) applyTrigger(kind model.TriggerKind, sendAt *time.Time) (tea.Model, tea.Cmd) {
 	id := m.picker.target
-	sel := m.byID(id)
-	if sel != nil && kind != model.TriggerManual && sel.Target.Pane == "" {
-		m.picker = picker{}
-		m.mode = modeBrowse
+	m.picker = picker{}
+	m.mode = modeBrowse
+	return m.setTriggerFor(id, kind, sendAt)
+}
+
+// setTriggerFor arms one message with a trigger, by id. applyTrigger wraps it
+// with the picker teardown; afterEdit calls it directly for a message whose
+// trigger was deferred until it had content.
+func (m *Model) setTriggerFor(id string, kind model.TriggerKind, sendAt *time.Time) (tea.Model, tea.Cmd) {
+	if sel := m.byID(id); sel != nil && kind != model.TriggerManual && sel.Target.Pane == "" {
 		m.setNotice("未设置目标面板；按 p 选择")
 		return m, nil
 	}
-	m.picker = picker{}
-	m.mode = modeBrowse
 	ctx := context.Background()
 	if _, err := m.provider.SetTrigger(ctx, id, kind, sendAt); err != nil {
 		m.setNotice("触发设置失败: " + err.Error())
@@ -472,6 +511,24 @@ func (m *Model) applyTrigger(kind model.TriggerKind, sendAt *time.Time) (tea.Mod
 	}
 	m.setNotice("触发方式已设为: " + kind.Label())
 	return m, tea.Batch(m.loadMsg(), m.snapshotCmd())
+}
+
+// openSchedulePrompt drops the user straight into the send-time input for a
+// message, skipping the trigger list -- used when a new message was created from
+// the 定时中 tab, where the trigger is already decided and only the time is left.
+func (m *Model) openSchedulePrompt(id string) (tea.Model, tea.Cmd) {
+	title := "定时发送"
+	if sel := m.byID(id); sel != nil {
+		title = "定时发送: " + truncate(sel.Summary(), 28)
+	}
+	m.mode = modeTriggerPicker
+	m.picker = picker{
+		title:        title,
+		target:       id,
+		awaitingTime: true,
+		prompt:       "发送时间 (20m, 09:30, 2026-09-17 02:00)",
+	}
+	return m, nil
 }
 
 func (m *Model) afterEdit(msg editorDoneMsg) (tea.Model, tea.Cmd) {
@@ -485,6 +542,12 @@ func (m *Model) afterEdit(msg editorDoneMsg) (tea.Model, tea.Cmd) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
+
+	// A new message created from the 队列中/定时中 tab carries a trigger to adopt
+	// now that it has content. Taken here and cleared unconditionally so a
+	// discarded edit cannot leave it armed for the next message.
+	deferTrigger, deferID := m.pendingTrigger, m.pendingTriggerID
+	m.pendingTrigger, m.pendingTriggerID = "", ""
 
 	if lp, ok := m.provider.(*LocalProvider); ok {
 		updated, err := lp.Store.ReloadFromDisk(msg.id, orMessage(before))
@@ -508,6 +571,19 @@ func (m *Model) afterEdit(msg editorDoneMsg) (tea.Model, tea.Cmd) {
 			return m, m.loadMsg()
 		}
 		m.setNotice(fmt.Sprintf("%s %s (%d 行)", verb, updated.ID, len(updated.BodyLines())))
+	}
+	// Adopt the tab's trigger now that the message exists with content. An empty
+	// draft (editor discarded) stays manual -- arming a completion or a timer on
+	// nothing would schedule a send with no body to deliver.
+	if deferID == msg.id {
+		if cur, cerr := m.provider.GetMessage(ctx, msg.id); cerr == nil && strings.TrimSpace(cur.Content) != "" {
+			switch deferTrigger {
+			case model.TriggerAfterCompletion:
+				return m.setTriggerFor(msg.id, model.TriggerAfterCompletion, nil)
+			case model.TriggerScheduled:
+				return m.openSchedulePrompt(msg.id)
+			}
+		}
 	}
 	return m, tea.Batch(m.loadMsg(), m.snapshotCmd())
 }

@@ -99,23 +99,18 @@ func (m *Model) headerView(width int) string {
 		parts = append(parts, stDim.Render("│"), stDim.Render("enter 确认 · esc 清除"))
 		return fit(joinParts(parts), width)
 	}
-	var counts struct{ open, sent, armed int }
+	// Counts split by tab, so the header and the tab bar speak the same words:
+	// "队列中" here is exactly the 队列中 tab, not a third name for the same set.
+	counts := map[filterMode]int{}
 	for _, msg := range m.msgs {
-		switch {
-		case msg.Status == model.StatusSent:
-			counts.sent++
-		default:
-			counts.open++
-		}
-		if msg.Status.Armed() {
-			counts.armed++
-		}
+		counts[tabOf(msg)]++
 	}
 	parts := []string{stTitle.Render("herdr-outbox"),
-		stDim.Render(fmt.Sprintf("%d 待处理", counts.open)),
-		stDim.Render(fmt.Sprintf("%d 已就绪", counts.armed)),
-		stDim.Render(fmt.Sprintf("%d 已发送", counts.sent))}
-	parts = append(parts, stDim.Render("│"), stDim.Render("筛选: "))
+		stDim.Render(fmt.Sprintf("%d 草稿", counts[filterDraft])),
+		stDim.Render(fmt.Sprintf("%d 队列中", counts[filterQueued])),
+		stDim.Render(fmt.Sprintf("%d 定时中", counts[filterScheduled])),
+		stDim.Render(fmt.Sprintf("%d 已发送", counts[filterSent]))}
+	parts = append(parts, stDim.Render("│"), stDim.Render("筛选："))
 	// The scope is always stated, even when it is "every session": the reader
 	// needs to know whether the list they are looking at is a subset. It is
 	// highlighted only when it actually is one, which is narrower than the flags
@@ -521,7 +516,7 @@ func (m *Model) treePickerSplitView(width, bodyHeight int) string {
 func (m *Model) workspaceFilterSplitView(width, bodyHeight int) string {
 	leftW := treePanelWidth(width, 50, 35, 15)
 	leftPanel := padBlock(treeRows(&m.picker, leftW, bodyHeight, true,
-		"空格选择(整组可全选) · y 复制id · ↑↓ 移动 · ←→ 展开 · 回车确认 · esc 返回"), leftW, bodyHeight)
+		"空格选择(整组可全选) · y 复制本行 id · ↑↓ 移动 · ←→ 展开 · 回车确认 · esc 返回"), leftW, bodyHeight)
 	rightPanel := m.workspaceFilterRightPanel(width-leftW-1, bodyHeight)
 	return treeSplitJoin(leftPanel, rightPanel, bodyHeight)
 }
@@ -660,36 +655,55 @@ func (m *Model) treePreviewPanel(width, bodyHeight int, showSelection bool) stri
 }
 
 func (m *Model) helpView(width int) string {
-	rows := [][2]string{
-		{"n / e / Enter", "新建消息（默认发给当前面板）· 编辑内容"},
-		{"i", "重命名标题（留空显示内容预览）"},
-		{"j k g G", "移动 · 跳转"},
-		{"tab h l ←→", "切换标签页"},
-		{"1-5", "全部/草稿/队列中/定时中/已发送"},
-		{"c", "清除筛选，显示所有会话的全部消息"},
-		{"s", "立即发送"},
-		{"t", "选择触发方式（手动、完成后、定时）"},
-		{"p", "在会话/工作区/标签/面板四级树里选择目标面板"},
-		{"u", "暂存为草稿（不发送）"},
-		{"f y d", "收藏 · 克隆 · 删除"},
-		{"x", "打开筛选树：会话/工作区/标签/面板（多选，整组可一次选中）"},
-		{"/", "搜索消息（标题、内容、目标）"},
-		{"r R", "刷新 herdr 状态 · 执行一次调度"},
-		{"L", "调度日志"},
-		{"ctrl+d ctrl+u", "滚动长消息"},
-		{"q", "退出"},
+	// Grouped by intent so the eye finds a key by what it is trying to do, not by
+	// alphabet. Descriptions lead with the verb and drop filler a regular user
+	// already knows.
+	sections := []struct {
+		title string
+		rows  [][2]string
+	}{
+		{"浏览", [][2]string{
+			{"j k / g G", "上下移动 · 跳到首尾"},
+			{"tab / ←→", "切换标签页"},
+			{"1-5", "全部 · 草稿 · 队列中 · 定时中 · 已发送"},
+			{"/", "搜索标题、内容、目标"},
+			{"ctrl+d/u", "滚动详情"},
+			{"L", "调度日志"},
+		}},
+		{"编辑", [][2]string{
+			{"n", "新建（默认发给当前面板）"},
+			{"e / Enter", "编辑内容"},
+			{"i", "改标题（留空则预览正文）"},
+			{"t", "改触发：手动 · 完成后 · 定时"},
+			{"u", "存为草稿"},
+			{"f / y / d", "收藏 · 克隆 · 删除"},
+		}},
+		{"目标与筛选", [][2]string{
+			{"p", "选目标面板（会话›工作区›标签›面板）"},
+			{"x", "按面板筛选（可整组勾选，y 复制本行 id）"},
+			{"c", "清除筛选，看所有会话"},
+		}},
+		{"发送", [][2]string{
+			{"s", "立即发送到目标面板"},
+			{"r / R", "刷新 herdr · 跑一次调度"},
+		}},
+		{"其他", [][2]string{
+			{"q / ?", "退出 · 本帮助"},
+		}},
 	}
-	out := make([]string, 0, len(rows)+3)
-	out = append(out, stTitle.Render("快捷键"))
-	for _, r := range rows {
-		out = append(out, "  "+stOk.Render(pad(r[0], 15))+stDim.Render(r[1]))
+	out := []string{stTitle.Render("快捷键")}
+	for _, sec := range sections {
+		out = append(out, "", stOk.Render(sec.title))
+		for _, r := range sec.rows {
+			out = append(out, "  "+stDim.Render(pad(r[0], 12))+r[1])
+		}
 	}
-	if m.editorMode == config.EditorBuiltin {
-		out = append(out, "  "+stDim.Render("内置编辑器: ctrl+s 保存 · 二次 esc 放弃；改配置见 herdr-outbox config editor"))
-	} else {
-		out = append(out, "  "+stDim.Render("外部编辑器: $EDITOR / $VISUAL；改配置见 herdr-outbox config editor"))
+	editor := "内置编辑器：ctrl+s 保存 · 再按 esc 放弃"
+	if m.editorMode != config.EditorBuiltin {
+		editor = "外部编辑器：$EDITOR / $VISUAL"
 	}
-	out = append(out, "  "+stDim.Render("数据以 Markdown 文件存储"))
+	out = append(out, "", stDim.Render(editor+"；改法见 herdr-outbox config editor"))
+	out = append(out, stDim.Render("消息以 Markdown 文件存储，无数据库"))
 	return lipgloss.NewStyle().Width(max(width, 1)).Render(strings.Join(out, "\n"))
 }
 

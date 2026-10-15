@@ -256,6 +256,13 @@ type Model struct {
 	editOriginal       string
 	editConfirmDiscard bool
 
+	// pendingTrigger is a trigger a new message should adopt once its content
+	// exists, chosen from the tab the user pressed n on. It cannot be set at
+	// create time: a scheduled message needs a send_at and an after_completion one
+	// needs a target, and a brand-new draft has neither. Empty id means none.
+	pendingTrigger   model.TriggerKind
+	pendingTriggerID string
+
 	quitting   bool
 	stepActive bool
 	deferTick  bool

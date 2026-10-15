@@ -274,40 +274,53 @@ func TestTreePreviewLeadsWithPaneName(t *testing.T) {
 	}
 }
 
-// copyTargetIDs mirrors what the tree shows as selected: ticked panes win,
-// otherwise the cursor row -- a group yields its whole subtree. The result is
-// qualified ids, sorted, so the clipboard is stable for a given tree state.
-func TestCopyTargetIDs(t *testing.T) {
-	// Ticked selection wins over the cursor, and comes back sorted.
-	m := threeLevelModel(t)
+// copyRowID copies the id of the highlighted row, at that row's own level: a
+// session copies its name, the other three copy their qualified id. It follows the
+// cursor, not the space-ticked set, because "what is this thing's id" is about the
+// one row under the cursor.
+func TestCopyRowIDPerLevel(t *testing.T) {
+	m, _, _ := newTestModel(t, 120, 40)
+	m.snapshot = twoSessions(t)
+	m.scopeFollow = false
 	m.openWorkspaceFilter()
-	m.picker.selectedPanes = map[string]bool{"w2:p1": true, "w1:p1": true}
-	putCursorOn(t, m, "w1:p2") // cursor is elsewhere; ticks must win
-	if got := strings.Join(m.copyTargetIDs(), " "); got != "w1:p1 w2:p1" {
-		t.Fatalf("ticked = %q, want the sorted selection", got)
-	}
 
-	// No ticks, cursor on a pane row: that pane alone.
-	m = threeLevelModel(t)
-	m.openWorkspaceFilter()
-	putCursorOn(t, m, "w1:p1")
-	if got := m.copyTargetIDs(); len(got) != 1 || got[0] != "w1:p1" {
-		t.Fatalf("pane cursor = %v, want [w1:p1]", got)
+	cases := []struct {
+		row      string
+		wantID   string
+		wantKind string
+	}{
+		{"note/", "note", "会话"},
+		{"note/w1", "note/w1", "工作区"},
+		{"note/w1:t1", "note/w1:t1", "标签"},
+		{"note/w1:p1", "note/w1:p1", "面板"},
 	}
-
-	// No ticks, cursor on a group row: every pane beneath it.
-	m = threeLevelModel(t)
-	m.openWorkspaceFilter()
-	putCursorOn(t, m, "w1") // the workspace group
-	if got := strings.Join(m.copyTargetIDs(), " "); got != "w1:p1 w1:p2" {
-		t.Fatalf("group cursor = %q, want the whole subtree", got)
+	for _, tc := range cases {
+		putCursorOn(t, m, tc.row)
+		id, kind := m.copyRowID()
+		if id != tc.wantID || kind != tc.wantKind {
+			t.Fatalf("row %q -> (%q, %q), want (%q, %q)", tc.row, id, kind, tc.wantID, tc.wantKind)
+		}
 	}
 
 	// A cursor past the end yields nothing rather than panicking.
-	m = threeLevelModel(t)
-	m.openWorkspaceFilter()
 	m.picker.cursor = len(m.picker.treeItems)
-	if got := m.copyTargetIDs(); len(got) != 0 {
-		t.Fatalf("out-of-range cursor = %v, want empty", got)
+	if id, _ := m.copyRowID(); id != "" {
+		t.Fatalf("out-of-range cursor = %q, want empty", id)
+	}
+}
+
+// The ambient single session has no name, so copying its session row yields
+// nothing -- there is no id that means anything to hand the user.
+func TestCopyRowIDAmbientSessionIsEmpty(t *testing.T) {
+	m := threeLevelModel(t)
+	m.openWorkspaceFilter()
+	putCursorOn(t, m, "/") // the single, unnamed session
+	if id, _ := m.copyRowID(); id != "" {
+		t.Fatalf("ambient session id = %q, want empty", id)
+	}
+	// Its pane rows still copy, qualified only by the empty session (bare id).
+	putCursorOn(t, m, "w1:p1")
+	if id, kind := m.copyRowID(); id != "w1:p1" || kind != "面板" {
+		t.Fatalf("pane = (%q, %q), want (w1:p1, 面板)", id, kind)
 	}
 }

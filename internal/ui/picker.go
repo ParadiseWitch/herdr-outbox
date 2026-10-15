@@ -2,9 +2,7 @@ package ui
 
 import (
 	"context"
-	"sort"
 	"strconv"
-	"strings"
 
 	"github.com/atotto/clipboard"
 	tea "github.com/charmbracelet/bubbletea"
@@ -547,20 +545,16 @@ func (m *Model) onWorkspaceFilterKey(key string) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case "y":
-		ids := m.copyTargetIDs()
-		if len(ids) == 0 {
-			m.setNotice("没有可复制的面板 id")
+		id, kind := m.copyRowID()
+		if id == "" {
+			m.setNotice("没有可复制的 id")
 			return m, nil
 		}
-		if err := clipboard.WriteAll(strings.Join(ids, "\n")); err != nil {
+		if err := clipboard.WriteAll(id); err != nil {
 			m.setNotice("复制失败: " + err.Error())
 			return m, nil
 		}
-		if len(ids) == 1 {
-			m.setNotice("已复制面板 id: " + ids[0])
-		} else {
-			m.setNotice("已复制 " + strconv.Itoa(len(ids)) + " 个面板 id")
-		}
+		m.setNotice("已复制" + kind + " id: " + id)
 		return m, nil
 	case "enter":
 		// A non-empty selection pins the list to exactly those panes; an empty one
@@ -580,31 +574,29 @@ func (m *Model) onWorkspaceFilterKey(key string) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// copyTargetIDs is the set of pane ids `y` copies out of the filter tree. It
-// mirrors what the tree treats as "selected": the space-ticked panes if any are
-// ticked, otherwise the row under the cursor -- a group row yields every pane
-// beneath it, a pane row yields itself. The ids are qualified (session/w1:p1),
-// the only form that means one terminal across sessions and the form `target`
-// accepts on the command line. Sorted so the same tree state always yields the
-// same clipboard.
-func (m *Model) copyTargetIDs() []string {
-	var ids []string
-	switch {
-	case len(m.picker.selectedPanes) > 0:
-		ids = make([]string, 0, len(m.picker.selectedPanes))
-		for id := range m.picker.selectedPanes {
-			ids = append(ids, id)
-		}
-	default:
-		if m.picker.cursor < len(m.picker.treeItems) {
-			item := m.picker.treeItems[m.picker.cursor]
-			if item.isParent {
-				ids = append(ids, item.paneIDs...)
-			} else {
-				ids = append(ids, item.key)
-			}
-		}
+// copyRowID is the id of the row under the cursor, at that row's own level: a
+// session copies its name, a workspace/tab/pane copies its qualified id
+// (session/w1, session/w1:t1, session/w1:p1). The second return is the Chinese
+// level name for the confirmation. It copies the highlighted row -- not the
+// space-ticked set -- because "what is this thing's id" is a question about the
+// one thing you are looking at. The id is qualified because a bare w1:p1 names a
+// different terminal in every session; the qualified form is also what `target`
+// accepts back.
+func (m *Model) copyRowID() (id, kind string) {
+	if m.picker.cursor >= len(m.picker.treeItems) {
+		return "", ""
 	}
-	sort.Strings(ids)
-	return ids
+	item := m.picker.treeItems[m.picker.cursor]
+	switch item.depth {
+	case 0:
+		// A session's id is its name; the ambient single session has none, and
+		// there is nothing meaningful to copy for it.
+		return item.session, "会话"
+	case 1:
+		return item.key, "工作区"
+	case 2:
+		return item.key, "标签"
+	default:
+		return item.key, "面板"
+	}
 }
