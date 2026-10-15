@@ -158,10 +158,11 @@ func (e *Engine) Step(ctx context.Context) ([]Event, error) {
 		return nil, err
 	}
 	now := e.clock()
+	q := computeQueue(msgs)
 
 	var events []Event
 	for _, m := range msgs {
-		evs, err := e.advance(ctx, m, snap, now)
+		evs, err := e.advance(ctx, m, snap, now, q)
 		events = append(events, evs...)
 		if err != nil {
 			events = append(events, Event{Kind: EventFailed, MessageID: m.ID, Title: m.Summary(), Detail: err.Error(), At: now})
@@ -244,7 +245,7 @@ func needsHerdr(msgs []*model.Message) bool {
 }
 
 // advance evaluates one message. It takes the engine lock already held by Step.
-func (e *Engine) advance(ctx context.Context, m *model.Message, snap *herdr.Snapshot, now time.Time) ([]Event, error) {
+func (e *Engine) advance(ctx context.Context, m *model.Message, snap *herdr.Snapshot, now time.Time, q queueState) ([]Event, error) {
 	switch m.Status {
 	case model.StatusScheduled:
 		if m.Trigger.SendAt == nil {
@@ -260,7 +261,7 @@ func (e *Engine) advance(ctx context.Context, m *model.Message, snap *herdr.Snap
 		ev, err := e.dispatchLocked(ctx, m, snap, "scheduled", false)
 		return ev, err
 	case model.StatusWaiting:
-		return e.advanceCompletion(ctx, m, snap, now)
+		return e.advanceCompletion(ctx, m, snap, now, q)
 	default:
 		return nil, nil
 	}
@@ -361,7 +362,7 @@ func msgsByID(msgs []*model.Message) map[string]*model.Message {
 // state_change_seq moving past the baseline recorded at arm time. That survives a
 // missed poll, ignores a pane that was already idle, and cannot re-fire because the
 // sequence does not move again until the agent does new work.
-func (e *Engine) advanceCompletion(ctx context.Context, m *model.Message, snap *herdr.Snapshot, now time.Time) ([]Event, error) {
+func (e *Engine) advanceCompletion(ctx context.Context, m *model.Message, snap *herdr.Snapshot, now time.Time, q queueState) ([]Event, error) {
 	// A session that could not be read this round is not a disappeared pane and a
 	// stopped one is not a dead target: the message holds or is parked with the
 	// session reason instead.
@@ -373,6 +374,26 @@ func (e *Engine) advanceCompletion(ctx context.Context, m *model.Message, snap *
 		return e.park(m, snap, now, "目标面板已消失；按 p 重新选择", EventDeferred)
 	}
 	e.bindTarget(m, pane)
+
+	// Only the pane's head may fire. A frozen pane (a Failed after_completion on
+	// it) halts the whole chain until the user retries or removes the failure.
+	key := queueKey(m)
+	if q.frozen[key] {
+		return nil, nil
+	}
+	if q.head[key] != m.ID {
+		// Frozen successor: keep its baseline pinned to the current seq so that
+		// when it becomes head it waits for the NEXT completion edge rather than
+		// reusing the one that fired its predecessor.
+		if m.BaselineSeq != pane.StateChangeSeq || !m.BaselineSet || m.ObservedWorking || m.SettleSince != nil {
+			m.BaselineSeq = pane.StateChangeSeq
+			m.BaselineSet = true
+			m.ObservedWorking = false
+			m.SettleSince = nil
+			return nil, e.saveState(m)
+		}
+		return nil, nil
+	}
 
 	if seq := snap.SeqError(pane.Session); seq != "" {
 		return e.park(m, snap, now, "herdr 未返回代理状态序号，无法判断是否完成；消息保持等待", EventDeferred)

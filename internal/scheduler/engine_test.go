@@ -770,3 +770,36 @@ func TestQueuePosResetOnPaneChange(t *testing.T) {
 		t.Fatalf("after moving to empty w1:p2: pos=%d, want fresh 1", got.QueuePos)
 	}
 }
+
+// Two after_completion messages on one pane fire on SEPARATE completions: the
+// first idle edge sends only the head; the second sends the successor. This is
+// the whole point of the queue -- today both fire on one edge.
+func TestCompletionQueueChainsAcrossEdges(t *testing.T) {
+	f := newFixture(t)
+	head := f.arm(f.newMsg("head\n", target, model.TriggerAfterCompletion))
+	succ := f.arm(f.newMsg("succ\n", target, model.TriggerAfterCompletion))
+	if head.QueuePos >= succ.QueuePos {
+		t.Fatalf("head pos %d should precede succ %d", head.QueuePos, succ.QueuePos)
+	}
+
+	// First completion: only head fires.
+	f.driveCompletion("w1:p1")
+	if n := len(f.fake.Sends()); n != 1 {
+		t.Fatalf("after first completion: %d sends, want 1", n)
+	}
+	if f.reload(head.ID).Status != model.StatusSent {
+		t.Fatalf("head not sent: %v", f.reload(head.ID).Status)
+	}
+	if f.reload(succ.ID).Status != model.StatusWaiting {
+		t.Fatalf("successor fired early: %v", f.reload(succ.ID).Status)
+	}
+
+	// Second completion: successor fires.
+	f.driveCompletion("w1:p1")
+	if n := len(f.fake.Sends()); n != 2 {
+		t.Fatalf("after second completion: %d sends, want 2", n)
+	}
+	if f.reload(succ.ID).Status != model.StatusSent {
+		t.Fatalf("successor not sent: %v", f.reload(succ.ID).Status)
+	}
+}
