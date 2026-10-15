@@ -486,21 +486,10 @@ func printMessageList(msgs []*model.Message, snap *herdr.Snapshot) {
 	}
 }
 
+// statusMark is the ls column's status icon. It reads model.Status.Glyph so the
+// CLI and the TUI show the same icon for the same state.
 func statusMark(s model.Status) string {
-	switch s {
-	case model.StatusSent:
-		return "✔"
-	case model.StatusFailed:
-		return "✘"
-	case model.StatusWaiting:
-		return "◎"
-	case model.StatusScheduled:
-		return "◷"
-	case model.StatusPending:
-		return "●"
-	default:
-		return "○"
-	}
+	return s.Glyph()
 }
 
 func runNew(dir string, args []string, opts globalOptions) error {

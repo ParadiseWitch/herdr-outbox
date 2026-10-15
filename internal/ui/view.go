@@ -217,10 +217,10 @@ func listWindow(cursor, n, height int) window {
 }
 
 func (m *Model) listRows(msg *model.Message, width int, selected bool) []string {
-	glyph := statusGlyph(msg.Status)
+	glyph := msg.Status.Glyph()
 	fav := " "
 	if msg.Favorite {
-		fav = "★"
+		fav = model.FavoriteGlyph
 	}
 	title := msg.Title
 	if title == "" {
@@ -308,25 +308,6 @@ func (m *Model) metaFor(msg *model.Message) string {
 		return "草稿 → " + target
 	default:
 		return string(msg.Status) + " → " + target
-	}
-}
-
-func statusGlyph(s model.Status) string {
-	switch s {
-	case model.StatusSent:
-		return "●"
-	case model.StatusFailed:
-		return "●"
-	case model.StatusSending:
-		return "●"
-	case model.StatusWaiting:
-		return "◉"
-	case model.StatusScheduled:
-		return "◷"
-	case model.StatusPending:
-		return "●"
-	default:
-		return "○"
 	}
 }
 

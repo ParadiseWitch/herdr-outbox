@@ -40,6 +40,35 @@ func (s Status) Label() string {
 	}
 }
 
+// Glyph is the Nerd Font icon for a status, shared by the TUI list and the CLI
+// ls so the two can never disagree about what a state looks like. The codepoints
+// are Font Awesome, present in every Nerd Font variant; they only render as icons
+// when the terminal font is one, and fall back to a box otherwise -- the same
+// tradeoff every NF-based TUI makes.
+func (s Status) Glyph() string {
+	switch s {
+	case StatusDraft:
+		return "\uf303" // pencil: content, no trigger decided
+	case StatusPending:
+		return "\uf1d8" // paper-plane: armed, fires on your send
+	case StatusScheduled:
+		return "\uf073" // calendar: fires on the clock
+	case StatusWaiting:
+		return "\uf252" // hourglass: waiting for the agent to finish
+	case StatusSending:
+		return "\uf110" // spinner: in flight
+	case StatusSent:
+		return "\uf00c" // check: delivered
+	case StatusFailed:
+		return "\uf00d" // cross: a send to retry
+	default:
+		return "\uf1db" // circle-o: unknown state
+	}
+}
+
+// FavoriteGlyph is the star shown beside a favourited message.
+const FavoriteGlyph = "\uf005" // fa-star
+
 func (s Status) Valid() bool {
 	switch s {
 	case StatusDraft, StatusPending, StatusScheduled, StatusWaiting, StatusSending, StatusSent, StatusFailed:
