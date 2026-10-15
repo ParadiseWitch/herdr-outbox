@@ -180,6 +180,14 @@ func Sort(ms []*model.Message) {
 			a.Trigger.SendAt != nil && b.Trigger.SendAt != nil {
 			return a.Trigger.SendAt.Before(*b.Trigger.SendAt)
 		}
+		// Same pane's after_completion queue orders by slot so the list matches
+		// the engine's send order. Scoped to one pane (session-qualified) so two
+		// panes' heads never compare against each other by QueuePos.
+		if a.Trigger.Kind == model.TriggerAfterCompletion && b.Trigger.Kind == model.TriggerAfterCompletion &&
+			a.Target.Session == b.Target.Session && a.Target.Pane == b.Target.Pane &&
+			a.QueuePos != b.QueuePos {
+			return a.QueuePos < b.QueuePos
+		}
 		if !a.UpdatedAt.Equal(b.UpdatedAt) {
 			return a.UpdatedAt.After(b.UpdatedAt)
 		}

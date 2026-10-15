@@ -323,3 +323,35 @@ func TestQueuePosOmittedWhenZero(t *testing.T) {
 		t.Fatalf("zero QueuePos leaked to disk:\n%s", raw)
 	}
 }
+
+// Within the same status rank, after_completion messages on one pane sort by
+// QueuePos, so the list order equals the send order. The IDs are chosen to sort
+// the opposite way alphabetically, so this fails without the QueuePos clause
+// (which would otherwise fall through to the ID tiebreak).
+func TestSortOrdersQueuedByQueuePos(t *testing.T) {
+	base := time.Now()
+	msgs := []*model.Message{
+		{ID: "a", Status: model.StatusWaiting, Trigger: model.Trigger{Kind: model.TriggerAfterCompletion}, Target: model.Target{Pane: "w1:p1"}, QueuePos: 3, CreatedAt: base},
+		{ID: "m", Status: model.StatusWaiting, Trigger: model.Trigger{Kind: model.TriggerAfterCompletion}, Target: model.Target{Pane: "w1:p1"}, QueuePos: 1, CreatedAt: base},
+		{ID: "z", Status: model.StatusWaiting, Trigger: model.Trigger{Kind: model.TriggerAfterCompletion}, Target: model.Target{Pane: "w1:p1"}, QueuePos: 2, CreatedAt: base},
+	}
+	Sort(msgs)
+	if msgs[0].ID != "m" || msgs[1].ID != "z" || msgs[2].ID != "a" {
+		t.Fatalf("order = %s %s %s, want m z a (by QueuePos)", msgs[0].ID, msgs[1].ID, msgs[2].ID)
+	}
+}
+
+// A different pane must not be pulled into the same QueuePos ordering: two panes'
+// heads (both QueuePos 1) keep their own relative order by the existing rules.
+func TestSortQueuePosScopedToPane(t *testing.T) {
+	base := time.Now()
+	msgs := []*model.Message{
+		{ID: "p2", Status: model.StatusWaiting, Trigger: model.Trigger{Kind: model.TriggerAfterCompletion}, Target: model.Target{Pane: "w1:p2"}, QueuePos: 1, CreatedAt: base, UpdatedAt: base.Add(time.Minute)},
+		{ID: "p1", Status: model.StatusWaiting, Trigger: model.Trigger{Kind: model.TriggerAfterCompletion}, Target: model.Target{Pane: "w1:p1"}, QueuePos: 5, CreatedAt: base, UpdatedAt: base},
+	}
+	Sort(msgs)
+	// UpdatedAt is the fallback tiebreak across panes; p2 is newer so it leads.
+	if msgs[0].ID != "p2" {
+		t.Fatalf("cross-pane ordering changed: %s first, want p2", msgs[0].ID)
+	}
+}
