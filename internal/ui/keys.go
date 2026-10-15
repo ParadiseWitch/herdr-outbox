@@ -175,6 +175,16 @@ func (m *Model) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.mode = modeConfirmDelete
 		}
 		return m, nil
+	case "[":
+		if sel != nil {
+			return m.reorder(sel, -1)
+		}
+		return m, nil
+	case "]":
+		if sel != nil {
+			return m.reorder(sel, 1)
+		}
+		return m, nil
 	case "s":
 		if sel != nil {
 			return m.sendNow(sel)
@@ -344,6 +354,18 @@ func (m *Model) toggleFavorite(sel *model.Message) (tea.Model, tea.Cmd) {
 	if _, err := m.provider.UpdateMessage(context.Background(), sel.ID, api.UpdateRequest{Favorite: &fav}); err != nil {
 		m.setNotice("保存失败：" + err.Error())
 	}
+	return m, m.loadMsg()
+}
+
+// reorder nudges a queued message up or down its pane's completion queue and
+// keeps the cursor on it so repeated presses walk it to the target slot.
+func (m *Model) reorder(sel *model.Message, delta int) (tea.Model, tea.Cmd) {
+	updated, err := m.provider.SetQueuePos(context.Background(), sel.ID, delta)
+	if err != nil {
+		m.setNotice("调整顺序失败：" + err.Error())
+		return m, m.loadMsg()
+	}
+	m.selectedID = updated.ID
 	return m, m.loadMsg()
 }
 
