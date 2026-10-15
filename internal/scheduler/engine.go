@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -612,6 +613,66 @@ func (e *Engine) SetTarget(ctx context.Context, id string, t model.Target) (*mod
 		return m, err
 	}
 	return m, e.saveEdit(m)
+}
+
+// SetQueuePos moves a message one slot up (delta -1) or down (delta +1) within
+// its pane's completion queue by exchanging slots with the neighbouring message.
+// Out of range, or a message that is not queued, is a no-op. Only the two
+// swapped messages are written, so a queue with gaps reorders without ever
+// renumbering (and colliding) a third message.
+func (e *Engine) SetQueuePos(ctx context.Context, id string, delta int) (*model.Message, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	m, err := e.Store.Get(id)
+	if err != nil {
+		return nil, err
+	}
+	if !queued(m) {
+		return m, nil
+	}
+	peers, err := e.queuedPeers(queueKey(m))
+	if err != nil {
+		return nil, err
+	}
+	sort.SliceStable(peers, func(i, j int) bool { return betterQueuePos(peers[i], peers[j]) })
+	i := indexOfID(peers, id)
+	j := i + delta
+	if i < 0 || j < 0 || j >= len(peers) {
+		return m, nil // at an end, or not found: nothing to swap with
+	}
+	peers[i].QueuePos, peers[j].QueuePos = peers[j].QueuePos, peers[i].QueuePos
+	if err := e.Store.Save(peers[i]); err != nil {
+		return nil, err
+	}
+	if err := e.Store.Save(peers[j]); err != nil {
+		return nil, err
+	}
+	return e.Store.Get(id)
+}
+
+// queuedPeers returns every waiting-or-failed after_completion message on the
+// same pane, including the caller.
+func (e *Engine) queuedPeers(key string) ([]*model.Message, error) {
+	msgs, err := e.Store.List()
+	if err != nil {
+		return nil, err
+	}
+	var out []*model.Message
+	for _, m := range msgs {
+		if queued(m) && queueKey(m) == key {
+			out = append(out, m)
+		}
+	}
+	return out, nil
+}
+
+func indexOfID(msgs []*model.Message, id string) int {
+	for i, m := range msgs {
+		if m.ID == id {
+			return i
+		}
+	}
+	return -1
 }
 
 // SendNow performs an explicit user send. It is the one path allowed to re-send an

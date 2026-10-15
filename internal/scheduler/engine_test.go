@@ -837,3 +837,60 @@ func TestFailedHeadFreezesChain(t *testing.T) {
 		t.Fatalf("successor never resumed after head recovered: %v", got.Status)
 	}
 }
+
+func TestSetQueuePosSwapsWithinPane(t *testing.T) {
+	f := newFixture(t)
+	a := f.arm(f.newMsg("a\n", target, model.TriggerAfterCompletion)) // pos 1
+	b := f.arm(f.newMsg("b\n", target, model.TriggerAfterCompletion)) // pos 2
+	c := f.arm(f.newMsg("c\n", target, model.TriggerAfterCompletion)) // pos 3
+
+	if _, err := f.engine.SetQueuePos(context.Background(), c.ID, -1); err != nil {
+		t.Fatal(err)
+	}
+	// c moved up one: order is now a, c, b.
+	if f.reload(c.ID).QueuePos != 2 || f.reload(b.ID).QueuePos != 3 {
+		t.Fatalf("swap down failed: c=%d b=%d", f.reload(c.ID).QueuePos, f.reload(b.ID).QueuePos)
+	}
+	// a is untouched by a c<->b swap.
+	if f.reload(a.ID).QueuePos != 1 {
+		t.Fatalf("head a moved unexpectedly: %d", f.reload(a.ID).QueuePos)
+	}
+	// Head cannot move further up: no-op, no error.
+	if _, err := f.engine.SetQueuePos(context.Background(), a.ID, -1); err != nil {
+		t.Fatal(err)
+	}
+	if f.reload(a.ID).QueuePos != 1 {
+		t.Fatalf("head moved past the top: %d", f.reload(a.ID).QueuePos)
+	}
+}
+
+// A gapped queue (non-contiguous slots left by sends/deletes) must reorder by
+// swapping only the two neighbours' slots. A naive "renumber everyone" swap would
+// silently collide a third message it never persists; this locks that out.
+func TestSetQueuePosSwapsWithGaps(t *testing.T) {
+	f := newFixture(t)
+	a := f.newMsg("a\n", target, model.TriggerAfterCompletion)
+	c := f.newMsg("c\n", target, model.TriggerAfterCompletion)
+	d := f.newMsg("d\n", target, model.TriggerAfterCompletion)
+	for _, m := range []*model.Message{a, c, d} {
+		m.Status = model.StatusWaiting
+	}
+	a.QueuePos, c.QueuePos, d.QueuePos = 5, 10, 2 // gaps, d is the current head
+	for _, m := range []*model.Message{a, c, d} {
+		if err := f.st.Save(m); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Sorted order is [d(2), a(5), c(10)]. Moving c up one swaps it with its
+	// neighbour a; d is untouched and must not be renumbered.
+	if _, err := f.engine.SetQueuePos(context.Background(), c.ID, -1); err != nil {
+		t.Fatal(err)
+	}
+	after := map[string]int{a.ID: f.reload(a.ID).QueuePos, c.ID: f.reload(c.ID).QueuePos, d.ID: f.reload(d.ID).QueuePos}
+	if after[d.ID] != 2 {
+		t.Fatalf("d (not a neighbour) changed: %d, want 2", after[d.ID])
+	}
+	if after[c.ID] != 5 || after[a.ID] != 10 {
+		t.Fatalf("c/a did not cleanly swap: c=%d a=%d, want c=5 a=10", after[c.ID], after[a.ID])
+	}
+}
