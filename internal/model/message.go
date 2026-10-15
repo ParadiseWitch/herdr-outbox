@@ -217,6 +217,13 @@ type Message struct {
 	ObservedWorking bool       `yaml:"observed_working,omitempty"`
 	SettleSince     *time.Time `yaml:"settle_since,omitempty"`
 
+	// QueuePos is a message's 1-based slot in its pane's after_completion queue.
+	// 0 means "not in a queue": manual, scheduled, or never armed as
+	// after_completion. Assigned once on first entry and kept across re-arms and
+	// failures so a retried message returns to its original place. Lower fires
+	// first; gaps are fine. Only consulted for after_completion messages.
+	QueuePos int `yaml:"queue_pos,omitempty"`
+
 	// Content is the Markdown body, stored outside the frontmatter.
 	Content string `yaml:"-"`
 }

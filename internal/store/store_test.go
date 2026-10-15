@@ -282,3 +282,44 @@ func TestDefaultDirHonoursEnv(t *testing.T) {
 		t.Fatalf("unexpected fallback %s", fallback)
 	}
 }
+
+func TestQueuePosRoundTrips(t *testing.T) {
+	s := openStore(t)
+	m, err := s.Create(&model.Message{
+		Content:  "x",
+		Target:   model.Target{Session: "default", Workspace: "w1", Pane: "w1:p1"},
+		Trigger:  model.Trigger{Kind: model.TriggerAfterCompletion},
+		Status:   model.StatusWaiting,
+		QueuePos: 3,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.Get(m.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.QueuePos != 3 {
+		t.Fatalf("QueuePos lost across round trip: %d", got.QueuePos)
+	}
+}
+
+// QueuePos 0 is the "not queued" sentinel and must not be written to disk, so
+// manual/scheduled messages keep byte-identical files after this change.
+func TestQueuePosOmittedWhenZero(t *testing.T) {
+	s := openStore(t)
+	m, err := s.Create(&model.Message{
+		Content: "x", Target: model.Target{Pane: "w1:p1"},
+		Trigger: model.Trigger{Kind: model.TriggerManual}, Status: model.StatusPending,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(s.Path(m.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "queue_pos") {
+		t.Fatalf("zero QueuePos leaked to disk:\n%s", raw)
+	}
+}
