@@ -266,6 +266,74 @@ func (e *Engine) advance(ctx context.Context, m *model.Message, snap *herdr.Snap
 	}
 }
 
+// queueState is this tick's per-pane after_completion ordering. head maps a pane
+// to the id of the message that may fire (lowest QueuePos); frozen marks panes
+// whose chain is halted because a message is Failed.
+type queueState struct {
+	head   map[string]string
+	frozen map[string]bool
+}
+
+// queueKey is the pane a message is queued on: its qualified id so two sessions
+// that both own `w1:p1` never share a queue.
+func queueKey(m *model.Message) string {
+	return herdr.Qualify(m.Target.Session, m.Target.Pane)
+}
+
+// queued reports whether this message participates in a completion queue.
+func queued(m *model.Message) bool {
+	return m.Trigger.Kind == model.TriggerAfterCompletion &&
+		(m.Status == model.StatusWaiting || m.Status == model.StatusFailed)
+}
+
+func computeQueue(msgs []*model.Message) queueState {
+	q := queueState{head: map[string]string{}, frozen: map[string]bool{}}
+	for _, m := range msgs {
+		if !queued(m) {
+			continue
+		}
+		key := queueKey(m)
+		if m.Status == model.StatusFailed {
+			q.frozen[key] = true
+			continue
+		}
+		// Waiting: lowest QueuePos wins; tie-break on CreatedAt then ID so the
+		// choice is stable and matches the store's sort.
+		if cur, ok := q.head[key]; ok {
+			if betterQueuePos(m, msgsByID(msgs)[cur]) {
+				q.head[key] = m.ID
+			}
+			continue
+		}
+		q.head[key] = m.ID
+	}
+	// A frozen pane has no head.
+	for k := range q.frozen {
+		delete(q.head, k)
+	}
+	return q
+}
+
+// betterQueuePos reports whether a should fire before b in the same pane.
+func betterQueuePos(a, b *model.Message) bool {
+	switch {
+	case a.QueuePos != b.QueuePos:
+		return a.QueuePos < b.QueuePos
+	case !a.CreatedAt.Equal(b.CreatedAt):
+		return a.CreatedAt.Before(b.CreatedAt)
+	default:
+		return a.ID < b.ID
+	}
+}
+
+func msgsByID(msgs []*model.Message) map[string]*model.Message {
+	m := make(map[string]*model.Message, len(msgs))
+	for _, x := range msgs {
+		m[x.ID] = x
+	}
+	return m
+}
+
 // advanceCompletion implements the after_completion trigger.
 //
 // Sending requires a real state transition after arming, proven by herdr's

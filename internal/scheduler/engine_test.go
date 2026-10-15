@@ -669,3 +669,50 @@ func TestSetTriggerSurvivesUnreachableHerdr(t *testing.T) {
 		t.Fatal("the first tick after herdr returns must record the missing baseline")
 	}
 }
+
+// computeQueue picks, per pane, the after_completion message with the lowest
+// QueuePos as head, and flags a pane frozen when any of its after_completion
+// messages is Failed (a delivered-later chain must not skip an undelivered head).
+func TestComputeQueue(t *testing.T) {
+	f := newFixture(t)
+	// Two messages on w1:p1 (QueuePos 1, 2) and one on w1:p2.
+	a := f.newMsg("a\n", target, model.TriggerAfterCompletion)
+	a.QueuePos = 1
+	b := f.newMsg("b\n", target, model.TriggerAfterCompletion)
+	b.QueuePos = 2
+	c := f.newMsg("c\n", model.Target{Workspace: "w1", Pane: "w1:p2"}, model.TriggerAfterCompletion)
+	c.QueuePos = 1
+	for _, m := range []*model.Message{a, b, c} {
+		m.Status = model.StatusWaiting
+		if err := f.st.Save(m); err != nil {
+			t.Fatal(err)
+		}
+	}
+	msgs := []*model.Message{a, b, c}
+	q := computeQueue(msgs)
+	if q.head["w1:p1"] != a.ID {
+		t.Fatalf("w1:p1 head = %q, want a (%q)", q.head["w1:p1"], a.ID)
+	}
+	if q.head["w1:p2"] != c.ID {
+		t.Fatalf("w1:p2 head = %q, want c", q.head["w1:p2"])
+	}
+	if len(q.frozen) != 0 {
+		t.Fatalf("nothing should be frozen: %v", q.frozen)
+	}
+
+	// Fail the head of w1:p1 -> that pane freezes, w1:p2 unaffected.
+	a.Status = model.StatusFailed
+	if err := f.st.Save(a); err != nil {
+		t.Fatal(err)
+	}
+	q = computeQueue([]*model.Message{a, b, c})
+	if !q.frozen["w1:p1"] {
+		t.Fatal("w1:p1 should freeze while its head is failed")
+	}
+	if q.head["w1:p1"] != "" {
+		t.Fatalf("frozen pane must have no head, got %q", q.head["w1:p1"])
+	}
+	if q.frozen["w1:p2"] {
+		t.Fatal("w1:p2 wrongly frozen")
+	}
+}
