@@ -142,6 +142,7 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/messages/{id}/send", s.handleSendNow)
 	mux.HandleFunc("PUT /api/messages/{id}/trigger", s.handleSetTrigger)
 	mux.HandleFunc("PUT /api/messages/{id}/target", s.handleSetTarget)
+	mux.HandleFunc("PUT /api/messages/{id}/queue-pos", s.handleSetQueuePos)
 	mux.HandleFunc("GET /api/snapshot", s.handleSnapshot)
 	mux.HandleFunc("GET /api/log", s.handleLog)
 	mux.HandleFunc("GET /api/status", s.handleStatus)

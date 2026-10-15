@@ -221,6 +221,22 @@ func (s *Server) handleSetTarget(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, toAPIMessage(m))
 }
 
+func (s *Server) handleSetQueuePos(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	var req api.QueuePosRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	m, err := s.engine.SetQueuePos(r.Context(), id, req.Delta)
+	if err != nil {
+		writeBackendError(w, err)
+		return
+	}
+	s.broadcast.Publish(api.Event{Kind: "message_updated", MessageID: m.ID, Title: m.Summary(), At: time.Now()})
+	writeJSON(w, http.StatusOK, toAPIMessage(m))
+}
+
 func (s *Server) handleSnapshot(w http.ResponseWriter, r *http.Request) {
 	snap, err := s.engine.Snapshot(r.Context())
 	if err != nil {
@@ -350,6 +366,7 @@ func toAPIMessage(m *model.Message) api.Message {
 		BaselineSet:     m.BaselineSet,
 		ObservedWorking: m.ObservedWorking,
 		SettleSince:     m.SettleSince,
+		QueuePos:        m.QueuePos,
 	}
 }
 
@@ -473,6 +490,7 @@ func fromAPIMessage(a *api.Message) *model.Message {
 		// until Arm records a real sequence.
 		ObservedWorking: a.ObservedWorking,
 		SettleSince:     a.SettleSince,
+		QueuePos:        a.QueuePos,
 	}
 }
 

@@ -23,6 +23,7 @@ type Message struct {
 	BaselineSet     bool       `json:"baseline_set,omitempty"`
 	ObservedWorking bool       `json:"observed_working,omitempty"`
 	SettleSince     *time.Time `json:"settle_since,omitempty"`
+	QueuePos        int        `json:"queue_pos,omitempty"`
 }
 
 type Target struct {
@@ -166,6 +167,10 @@ type TriggerRequest struct {
 
 type TargetRequest struct {
 	Target Target `json:"target"`
+}
+
+type QueuePosRequest struct {
+	Delta int `json:"delta"`
 }
 
 type ContentRequest struct {

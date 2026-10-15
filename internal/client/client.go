@@ -143,6 +143,15 @@ func (c *Client) SetTarget(ctx context.Context, id string, target model.Target) 
 	return fromAPIMessage(&resp), nil
 }
 
+func (c *Client) SetQueuePos(ctx context.Context, id string, delta int) (*model.Message, error) {
+	req := api.QueuePosRequest{Delta: delta}
+	var resp api.Message
+	if err := c.put(ctx, "/api/messages/"+id+"/queue-pos", req, &resp); err != nil {
+		return nil, err
+	}
+	return fromAPIMessage(&resp), nil
+}
+
 func (c *Client) Snapshot(ctx context.Context) (*herdr.Snapshot, error) {
 	var resp api.SnapshotResponse
 	if err := c.get(ctx, "/api/snapshot", &resp); err != nil {
@@ -346,6 +355,7 @@ func toAPIMessage(m *model.Message) api.Message {
 		BaselineSet:     m.BaselineSet,
 		ObservedWorking: m.ObservedWorking,
 		SettleSince:     m.SettleSince,
+		QueuePos:        m.QueuePos,
 	}
 }
 
@@ -389,6 +399,7 @@ func fromAPIMessage(a *api.Message) *model.Message {
 		BaselineSet:     a.BaselineSet,
 		ObservedWorking: a.ObservedWorking,
 		SettleSince:     a.SettleSince,
+		QueuePos:        a.QueuePos,
 	}
 }
 

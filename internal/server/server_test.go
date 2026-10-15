@@ -257,3 +257,75 @@ func TestUnreachableHerdrCrossesTheWire(t *testing.T) {
 		t.Fatal("the client was told a baseline exists that herdr never supplied")
 	}
 }
+
+// QueuePos must survive the server->client round trip, or a remote TUI would
+// reorder a pane's queue differently from the engine that sends it.
+func TestQueuePosSurvivesTheRoundTrip(t *testing.T) {
+	srv, ctx, _, _ := newTestServer(t)
+	if err := srv.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	c := client.New("http://" + srv.Addr())
+	created, err := c.CreateMessage(context.Background(), &model.Message{
+		Content:  "x",
+		Target:   model.Target{Session: "default", Workspace: "w1", Pane: "w1:p1"},
+		Trigger:  model.Trigger{Kind: model.TriggerAfterCompletion},
+		Status:   model.StatusWaiting,
+		QueuePos: 4,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.QueuePos != 4 {
+		t.Fatalf("QueuePos after create = %d, want 4", created.QueuePos)
+	}
+	list, err := c.ListMessages(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 1 || list[0].QueuePos != 4 {
+		t.Fatalf("QueuePos lost on list: %+v", list)
+	}
+}
+
+// The queue-pos endpoint must reach the engine's swap and return the reordered
+// message, so a remote TUI's [ ] keys drive the same logic as the local one.
+func TestQueuePosEndpointReorders(t *testing.T) {
+	srv, ctx, _, _ := newTestServer(t)
+	if err := srv.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	c := client.New("http://" + srv.Addr())
+	mk := func(pos int) *model.Message {
+		m, err := c.CreateMessage(context.Background(), &model.Message{
+			Content:  "x",
+			Target:   model.Target{Session: "default", Workspace: "w1", Pane: "w1:p1"},
+			Trigger:  model.Trigger{Kind: model.TriggerAfterCompletion},
+			Status:   model.StatusWaiting,
+			QueuePos: pos,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return m
+	}
+	first := mk(1)
+	second := mk(2)
+	got, err := c.SetQueuePos(context.Background(), second.ID, -1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.QueuePos != 1 || got.ID != second.ID {
+		t.Fatalf("second did not move to slot 1: %+v", got)
+	}
+	// The former head took the vacated slot.
+	after, err := c.ListMessages(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range after {
+		if m.ID == first.ID && m.QueuePos != 2 {
+			t.Fatalf("first not pushed to slot 2: %+v", m)
+		}
+	}
+}
